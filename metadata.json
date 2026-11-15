@@ -1,0 +1,6 @@
+{
+  "name": "Muse AI",
+  "description": "Think Smarter. Learn Faster. Do More. Complete AI-powered smart assistant, voice AI, smart planner, and personalized learning companion.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

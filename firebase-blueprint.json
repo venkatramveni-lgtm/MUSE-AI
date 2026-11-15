@@ -1,0 +1,308 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Public/functional user account profile without sensitive PII (PII isolated in private subcollection).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "role": { "type": "string", "enum": ["student", "parent", "teacher", "admin"] },
+        "board": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "classLevel": { "type": "integer" },
+        "preferredLanguage": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "learningPreference": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "academicGoal": { "type": "string", "minLength": 2, "maxLength": 240 },
+        "subjects": { "type": "array" },
+        "guardianConsentApproved": { "type": "boolean" },
+        "onboardingComplete": { "type": "boolean" },
+        "theme": { "type": "string", "enum": ["dark", "light"] },
+        "studyStreak": { "type": "integer" },
+        "voiceAutoSpeak": { "type": "boolean" },
+        "speechRate": { "type": "number" },
+        "speechPitch": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role", "board", "classLevel", "preferredLanguage", "onboardingComplete", "guardianConsentApproved", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII document for user email and guardian contact.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "guardianEmail": { "type": "string", "maxLength": 160 },
+        "notificationsEnabled": { "type": "boolean" },
+        "nonEssentialNotifications": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "notificationsEnabled", "nonEssentialNotifications", "updatedAt"]
+    },
+    "AdminRegistry": {
+      "title": "AdminRegistry",
+      "description": "Trusted administrator lookup registry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "grantedAt"]
+    },
+    "ParentLink": {
+      "title": "ParentLink",
+      "description": "Authorized parent-to-student guardian link with explicit consent.",
+      "type": "object",
+      "properties": {
+        "parentUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentDisplayName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "consentGranted": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["pending", "active", "revoked"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["parentUid", "studentUid", "consentGranted", "status", "createdAt", "updatedAt"]
+    },
+    "Lesson": {
+      "title": "Lesson",
+      "description": "Structured educational lesson organized by Board, Class, Subject, Chapter, Topic.",
+      "type": "object",
+      "properties": {
+        "board": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "classLevel": { "type": "integer" },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "chapter": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "topic": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "language": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "summary": { "type": "string", "minLength": 10, "maxLength": 2000 },
+        "isSampleContent": { "type": "boolean" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["board", "classLevel", "subject", "chapter", "topic", "title", "language", "summary", "isSampleContent", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Question bank item with difficulty and explanation.",
+      "type": "object",
+      "properties": {
+        "board": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "classLevel": { "type": "integer" },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "chapter": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "topic": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "type": { "type": "string", "enum": ["mcq", "true_false", "fill_blank", "match", "short_answer"] },
+        "difficulty": { "type": "string", "enum": ["easy", "medium", "hard"] },
+        "prompt": { "type": "string", "minLength": 4, "maxLength": 600 },
+        "explanation": { "type": "string", "minLength": 4, "maxLength": 1000 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["board", "classLevel", "subject", "chapter", "topic", "type", "difficulty", "prompt", "explanation", "createdBy", "createdAt"]
+    },
+    "QuizAttempt": {
+      "title": "QuizAttempt",
+      "description": "Immutable student quiz/test attempt with verified score.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "assessmentId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mode": { "type": "string", "enum": ["daily_quiz", "weekly_test", "practice"] },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "score": { "type": "integer" },
+        "total": { "type": "integer" },
+        "percentage": { "type": "number" },
+        "status": { "type": "string", "enum": ["submitted"] },
+        "submittedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "assessmentId", "mode", "subject", "score", "total", "percentage", "status", "submittedAt"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Teacher-created class assignment.",
+      "type": "object",
+      "properties": {
+        "teacherUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 3, "maxLength": 140 },
+        "description": { "type": "string", "minLength": 5, "maxLength": 1500 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "board": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "classLevel": { "type": "integer" },
+        "dueDate": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["teacherUid", "title", "description", "subject", "board", "classLevel", "dueDate", "createdAt", "updatedAt"]
+    },
+    "Submission": {
+      "title": "Submission",
+      "description": "Student submission for an assignment.",
+      "type": "object",
+      "properties": {
+        "assignmentId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "content": { "type": "string", "minLength": 2, "maxLength": 4000 },
+        "status": { "type": "string", "enum": ["submitted", "reviewed"] },
+        "teacherFeedback": { "type": "string", "maxLength": 1000 },
+        "grade": { "type": "string", "maxLength": 20 },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["assignmentId", "studentUid", "content", "status", "submittedAt", "updatedAt"]
+    },
+    "LearningProgress": {
+      "title": "LearningProgress",
+      "description": "Per-lesson student completion and bookmark status.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "lessonId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "completed": { "type": "boolean" },
+        "bookmarked": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "lessonId", "subject", "completed", "bookmarked", "updatedAt"]
+    },
+    "StudyPlan": {
+      "title": "StudyPlan",
+      "description": "Student study planner task item.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "scheduledDate": { "type": "string", "minLength": 4, "maxLength": 30 },
+        "scheduledTime": { "type": "string", "maxLength": 20 },
+        "taskType": { "type": "string", "enum": ["lesson", "quiz", "revision", "assignment", "exam"] },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "recurrence": { "type": "string", "enum": ["none", "daily", "weekly"] },
+        "completed": { "type": "boolean" },
+        "reminderEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "title", "subject", "scheduledDate", "taskType", "completed", "reminderEnabled", "createdAt", "updatedAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "User notification entry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "message": { "type": "string", "minLength": 2, "maxLength": 400 },
+        "category": { "type": "string", "enum": ["test", "assignment", "study", "milestone", "account"] },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "title", "message", "category", "read", "createdAt"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "AI Teacher conversation thread owned by a single student.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "mode": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "messageCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "title", "mode", "subject", "messageCount", "createdAt", "updatedAt"]
+    },
+    "ConversationMessage": {
+      "title": "ConversationMessage",
+      "description": "Individual message inside an AI Teacher conversation subcollection.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sender": { "type": "string", "enum": ["student", "ai"] },
+        "text": { "type": "string", "minLength": 1, "maxLength": 6000 },
+        "feedback": { "type": "string", "enum": ["none", "helpful", "needs_clarity"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "sender", "text", "feedback", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Security audit log for sensitive operations.",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "action": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "targetPath": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorUid", "action", "targetPath", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "User profile and learning preferences (PII isolated)."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Owner-only PII document storing email and notification settings."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRegistry" },
+      "description": "Trusted admin registry."
+    },
+    "/parentLinks/{linkId}": {
+      "schema": { "$ref": "#/entities/ParentLink" },
+      "description": "Guardian-student access links."
+    },
+    "/lessons/{lessonId}": {
+      "schema": { "$ref": "#/entities/Lesson" },
+      "description": "Board/Class/Subject/Chapter/Topic lessons."
+    },
+    "/questions/{questionId}": {
+      "schema": { "$ref": "#/entities/Question" },
+      "description": "Assessment question bank."
+    },
+    "/quizAttempts/{attemptId}": {
+      "schema": { "$ref": "#/entities/QuizAttempt" },
+      "description": "Immutable quiz, weekly test, and practice attempts."
+    },
+    "/assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/Assignment" },
+      "description": "Teacher-created assignments."
+    },
+    "/submissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/Submission" },
+      "description": "Student assignment submissions and teacher feedback."
+    },
+    "/learningProgress/{progressId}": {
+      "schema": { "$ref": "#/entities/LearningProgress" },
+      "description": "Lesson completion and bookmarks."
+    },
+    "/studyPlans/{planId}": {
+      "schema": { "$ref": "#/entities/StudyPlan" },
+      "description": "Personalized study schedule tasks."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Per-user notifications."
+    },
+    "/conversations/{conversationId}": {
+      "schema": { "$ref": "#/entities/Conversation" },
+      "description": "AI Teacher conversations."
+    },
+    "/conversations/{conversationId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ConversationMessage" },
+      "description": "Messages belonging to a parent conversation."
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable audit trail."
+    }
+  }
+}
