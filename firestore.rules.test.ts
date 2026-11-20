@@ -36,3 +36,14 @@ test('firestore.rules covers every collection declared in firebase-blueprint.jso
     );
   }
 });
+
+test('firestore.rules permits user self-update of voicePreset alongside speech settings', () => {
+  assert.match(rulesSource, /'voiceAutoSpeak', 'speechRate', 'speechPitch', 'voicePreset', 'updatedAt'/);
+});
+
+test('firestore.rules enforces owner-only rules and validation for savedNotes', () => {
+  assert.match(rulesSource, /function isValidSavedNote\(data\)/);
+  assert.match(rulesSource, /match \/savedNotes\/\{noteId\}[\s\S]*incoming\(\)\.uid == request\.auth\.uid/);
+});
+
+

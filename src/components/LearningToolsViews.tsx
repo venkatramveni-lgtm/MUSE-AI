@@ -33,6 +33,12 @@ import {
 import { MuseWorkspaceState } from '../services/workspaceStore';
 import { OfflineCacheStatus } from '../services/offlineCacheService';
 import { detectWeakTopics, evaluateAchievements } from '../utils/academicEngine';
+import { filterByStudentClass, prioritizeByClassAndProfile } from '../utils/curriculumFilter';
+import {
+  GEMINI_VOICE_PRESETS,
+  pickPreferredSpeechVoice,
+  resolveMuseVoicePreset,
+} from '../utils/liveVoiceUtils';
 import { PWAInstallButton } from './PWAStatusBar';
 
 export { VideoAcademyView } from './VideoAcademyView';
@@ -270,7 +276,14 @@ export const RevisionCenterView: React.FC<{
   const [noteContent, setNoteContent] = useState('');
 
   const weakTopics = detectWeakTopics(workspace.attempts, workspace.questions);
-  const card = SAMPLE_FLASHCARDS[cardIdx % SAMPLE_FLASHCARDS.length];
+  const prioritizedCards = React.useMemo(
+    () =>
+      workspace.profile
+        ? prioritizeByClassAndProfile(SAMPLE_FLASHCARDS, workspace.profile)
+        : SAMPLE_FLASHCARDS,
+    [workspace.profile]
+  );
+  const card = prioritizedCards[cardIdx % prioritizedCards.length];
 
   const handleAddNote = (e: React.FormEvent) => {
     e.preventDefault();
@@ -303,7 +316,7 @@ export const RevisionCenterView: React.FC<{
               <Layers className="w-4 h-4 text-purple-400" /> Interactive Flashcards
             </h2>
             <span className="text-xs text-[var(--text-muted)]">
-              Card {(cardIdx % SAMPLE_FLASHCARDS.length) + 1} / {SAMPLE_FLASHCARDS.length}
+              Card {(cardIdx % prioritizedCards.length) + 1} / {prioritizedCards.length}
             </span>
           </div>
 
@@ -313,7 +326,7 @@ export const RevisionCenterView: React.FC<{
             className="w-full min-h-[170px] muse-panel p-6 text-center flex flex-col items-center justify-center gap-2 hover:border-blue-500/50 transition"
           >
             <span className="text-[11px] uppercase tracking-wider font-semibold text-blue-400">
-              {flipped ? 'Answer' : `${card.subject} • ${card.chapter}`}
+              {flipped ? 'Answer' : `${card.subject}${card.classLevel ? ` (Class ${card.classLevel})` : ''} • ${card.chapter}`}
             </span>
             <span className="text-base font-semibold">
               {flipped ? card.back : card.front}
@@ -325,7 +338,7 @@ export const RevisionCenterView: React.FC<{
             <button
               type="button"
               onClick={() => {
-                setCardIdx((i) => (i - 1 + SAMPLE_FLASHCARDS.length) % SAMPLE_FLASHCARDS.length);
+                setCardIdx((i) => (i - 1 + prioritizedCards.length) % prioritizedCards.length);
                 setFlipped(false);
               }}
               className="px-4 py-2 rounded-xl text-xs bg-[var(--bg-elevated)] border border-[var(--border-subtle)]"
@@ -335,7 +348,7 @@ export const RevisionCenterView: React.FC<{
             <button
               type="button"
               onClick={() => {
-                setCardIdx((i) => (i + 1) % SAMPLE_FLASHCARDS.length);
+                setCardIdx((i) => (i + 1) % prioritizedCards.length);
                 setFlipped(false);
               }}
               className="px-4 py-2 rounded-xl text-xs font-semibold muse-btn-primary"
@@ -436,6 +449,12 @@ export const AssignmentCenterView: React.FC<{
 }> = ({ profile, assignments, submissions, onSubmitAssignment }) => {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [files, setFiles] = useState<Record<string, string>>({});
+  const [myClassOnly, setMyClassOnly] = useState<boolean>(true);
+
+  const visibleAssignments = React.useMemo(() => {
+    const ranked = prioritizeByClassAndProfile(assignments, profile);
+    return filterByStudentClass(ranked, profile.classLevel, myClassOnly);
+  }, [assignments, profile, myClassOnly]);
 
   const handleSend = (asgn: AssignmentItem) => {
     const text = (drafts[asgn.id] || '').trim();
@@ -456,15 +475,41 @@ export const AssignmentCenterView: React.FC<{
 
   return (
     <div className="space-y-5">
-      <div className="muse-card p-5">
-        <h1 className="font-display font-bold text-xl">Assignment Centre</h1>
-        <p className="text-xs text-[var(--text-muted)]">
-          Submit teacher-assigned homework, track review status, and read teacher feedback.
-        </p>
+      <div className="muse-card p-5 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="font-display font-bold text-xl">Assignment Centre</h1>
+          <p className="text-xs text-[var(--text-muted)]">
+            Class {profile.classLevel} homework assignments prioritized first — submit answers and read teacher feedback.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMyClassOnly(true)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 ${
+              myClassOnly
+                ? 'bg-blue-600 text-white border-blue-500'
+                : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)]'
+            }`}
+          >
+            My Class ({profile.classLevel})
+          </button>
+          <button
+            type="button"
+            onClick={() => setMyClassOnly(false)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 ${
+              !myClassOnly
+                ? 'bg-blue-600 text-white border-blue-500'
+                : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)]'
+            }`}
+          >
+            All Classes
+          </button>
+        </div>
       </div>
 
       <div className="space-y-4">
-        {assignments.map((asgn) => {
+        {visibleAssignments.map((asgn) => {
           const existing = submissions.find((s) => s.assignmentId === asgn.id);
           return (
             <div key={asgn.id} className="muse-card p-5 space-y-3">
@@ -608,7 +653,7 @@ export const ProfileSettingsView: React.FC<{
   onSaveProfile: (updated: UserProfile) => void;
   onExportData?: () => void;
   onResendVerification?: () => Promise<void>;
-  onDeleteAccount: () => void;
+  onDeleteAccount: () => Promise<void> | void;
 }> = ({
   profile,
   theme,
@@ -631,9 +676,12 @@ export const ProfileSettingsView: React.FC<{
   const [voiceAutoSpeak, setVoiceAutoSpeak] = useState(Boolean(profile.voiceAutoSpeak));
   const [speechRate, setSpeechRate] = useState(profile.speechRate ?? 1.0);
   const [speechPitch, setSpeechPitch] = useState(profile.speechPitch ?? 1.0);
+  const [voicePreset, setVoicePreset] = useState(() => resolveMuseVoicePreset(profile.voicePreset));
   const [savedNotice, setSavedNotice] = useState(false);
   const [verificationSent, setVerificationSent] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -650,6 +698,7 @@ export const ProfileSettingsView: React.FC<{
       voiceAutoSpeak,
       speechRate,
       speechPitch,
+      voicePreset,
       updatedAt: new Date().toISOString(),
     });
     setSavedNotice(true);
@@ -660,8 +709,11 @@ export const ProfileSettingsView: React.FC<{
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(
-      'Hello! This is how Muse AI sounds with your selected voice speed and pitch.'
+      "Hello! I'm Muse, your friendly AI assistant. This is how I sound with your selected voice preset, speed, and pitch."
     );
+    const chosenVoice = pickPreferredSpeechVoice(window.speechSynthesis.getVoices(), preferredLanguage);
+    if (chosenVoice) utterance.voice = chosenVoice;
+    utterance.lang = chosenVoice?.lang || 'en-IN';
     utterance.rate = Math.min(2, Math.max(0.5, speechRate));
     utterance.pitch = Math.min(2, Math.max(0.5, speechPitch));
     window.speechSynthesis.speak(utterance);
@@ -750,9 +802,14 @@ export const ProfileSettingsView: React.FC<{
         </div>
 
         <div className="muse-panel p-4 space-y-3">
-          <div className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-1.5">
-            <Volume2 className="w-3.5 h-3.5 text-purple-400" />
-            <span>Voice AI Preferences</span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-1.5">
+              <Volume2 className="w-3.5 h-3.5 text-purple-400" />
+              <span>Nano AI Voice Preferences</span>
+            </div>
+            <span className="text-[11px] font-medium text-purple-300">
+              Active Identity: Nano AI · {voicePreset} (Indian English default)
+            </span>
           </div>
           <label className="flex items-center gap-2 text-xs cursor-pointer">
             <input
@@ -762,20 +819,39 @@ export const ProfileSettingsView: React.FC<{
             />
             <span>Automatically read AI Assistant replies aloud</span>
           </label>
-          <div className="flex flex-wrap items-center gap-3 text-xs">
-            <label htmlFor="prof-speech-rate" className="text-[var(--text-muted)] font-medium">
-              Voice Playback Speed
-            </label>
-            <select
-              id="prof-speech-rate"
-              value={String(speechRate)}
-              onChange={(e) => setSpeechRate(Number(e.target.value))}
-              className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs tabular-nums"
-            >
-              <option value="0.85">0.85x Calm</option>
-              <option value="1">1.0x Normal</option>
-              <option value="1.2">1.2x Fast</option>
-            </select>
+          <div className="grid sm:grid-cols-2 gap-3 text-xs">
+            <div className="space-y-1">
+              <label htmlFor="prof-voice-preset" className="block text-[var(--text-muted)] font-medium">
+                Nano Voice Preset (Gemini Live &amp; TTS)
+              </label>
+              <select
+                id="prof-voice-preset"
+                value={voicePreset}
+                onChange={(e) => setVoicePreset(resolveMuseVoicePreset(e.target.value))}
+                className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs"
+              >
+                {GEMINI_VOICE_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label} — {preset.description}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="prof-speech-rate" className="block text-[var(--text-muted)] font-medium">
+                Voice Playback Speed
+              </label>
+              <select
+                id="prof-speech-rate"
+                value={String(speechRate)}
+                onChange={(e) => setSpeechRate(Number(e.target.value))}
+                className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs tabular-nums"
+              >
+                <option value="0.85">0.85x Calm</option>
+                <option value="1">1.0x Normal</option>
+                <option value="1.2">1.2x Fast</option>
+              </select>
+            </div>
           </div>
           <div className="space-y-2 pt-1 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -924,19 +1000,27 @@ export const ProfileSettingsView: React.FC<{
           </div>
         </div>
         <p className="text-xs text-[var(--text-secondary)]">
-          Muse AI uses the Service Worker API and Cache Storage to keep your My Lessons, Saved Notes, and learning progress available without an internet connection.
+          Nano AI uses the Service Worker API and Cache Storage to keep your My Lessons, Saved Notes, and learning progress available without an internet connection.
         </p>
       </div>
 
       <div className="muse-card p-5 border border-rose-500/30 space-y-3">
         <h2 className="font-display font-bold text-base text-rose-400">Account Deletion</h2>
         <p className="text-xs text-[var(--text-muted)]">
-          Permanently remove your Muse AI profile and private account records.
+          Permanently remove your Nano AI profile and private account records.
         </p>
+        {deleteError && (
+          <div role="alert" className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/40 text-xs text-rose-300">
+            {deleteError}
+          </div>
+        )}
         {!confirmDelete ? (
           <button
             type="button"
-            onClick={() => setConfirmDelete(true)}
+            onClick={() => {
+              setDeleteError(null);
+              setConfirmDelete(true);
+            }}
             className="px-4 py-2 rounded-xl text-xs font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/40"
           >
             Delete My Account
@@ -945,15 +1029,35 @@ export const ProfileSettingsView: React.FC<{
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={onDeleteAccount}
-              className="px-4 py-2 rounded-xl text-xs font-semibold bg-rose-600 text-white"
+              disabled={deleteLoading}
+              onClick={async () => {
+                setDeleteLoading(true);
+                setDeleteError(null);
+                try {
+                  await onDeleteAccount();
+                } catch (err: unknown) {
+                  const raw = err instanceof Error ? err.message : String(err);
+                  if (raw.includes('requires-recent-login')) {
+                    setDeleteError('For security, please sign out and sign back in right before deleting your account.');
+                  } else {
+                    setDeleteError(raw || 'Could not complete account deletion. Please try again.');
+                  }
+                } finally {
+                  setDeleteLoading(false);
+                }
+              }}
+              className="px-4 py-2 rounded-xl text-xs font-semibold bg-rose-600 text-white disabled:opacity-50"
             >
-              Confirm Permanent Delete
+              {deleteLoading ? 'Deleting Account...' : 'Confirm Permanent Delete'}
             </button>
             <button
               type="button"
-              onClick={() => setConfirmDelete(false)}
-              className="px-3 py-2 rounded-xl text-xs bg-[var(--bg-elevated)] border border-[var(--border-subtle)]"
+              disabled={deleteLoading}
+              onClick={() => {
+                setConfirmDelete(false);
+                setDeleteError(null);
+              }}
+              className="px-3 py-2 rounded-xl text-xs bg-[var(--bg-elevated)] border border-[var(--border-subtle)] disabled:opacity-50"
             >
               Cancel
             </button>

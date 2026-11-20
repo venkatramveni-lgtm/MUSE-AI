@@ -13,6 +13,7 @@ import {
   RotateCcw,
   Send,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Square,
   Volume2,
@@ -20,6 +21,7 @@ import {
 } from 'lucide-react';
 import { LANGUAGES } from '../data/curriculumSeed';
 import { getBcp47ForLanguage } from '../data/educationRegistry';
+import { authFetch, getFirebaseIdToken } from '../services/firebaseClient';
 import {
   LiveConversationTurn,
   LiveVoiceStatus,
@@ -28,14 +30,26 @@ import {
 } from '../types/muse';
 import {
   base64Int16ToFloat32,
+  DEFAULT_MUSE_VOICE_PRESET,
+  extractCompleteSpeechSentences,
   formatDurationTimer,
+  GEMINI_VOICE_PRESETS,
+  MUSE_TEST_EXPECTED_INTRO,
+  MUSE_TEST_PROMPT,
   parseLiveVoiceCommand,
   pcmFloat32ToInt16Base64,
+  pickPreferredSpeechVoice,
+  resolveMuseVoicePreset,
 } from '../utils/liveVoiceUtils';
 
 interface VoiceAIViewProps {
   profile: UserProfile;
-  onSaveVoicePreference?: (voiceAutoSpeak: boolean, speechRate: number) => void;
+  onSaveVoicePreference?: (
+    voiceAutoSpeak: boolean,
+    speechRate: number,
+    voicePreset?: string,
+    speechPitch?: number
+  ) => void;
   onSaveRememberedNote?: (note: SavedNote) => void;
   onOpenSearch?: (query: string) => void;
 }
@@ -88,12 +102,25 @@ function downsampleBuffer(buffer: Float32Array, inputSampleRate: number, targetS
 
 export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
   profile,
+  onSaveVoicePreference,
   onSaveRememberedNote,
   onOpenSearch,
 }) => {
   const [viewMode, setViewMode] = useState<'live_talk' | 'classic'>('live_talk');
   const [language, setLanguage] = useState(profile.preferredLanguage || 'English');
   const [speechRate, setSpeechRate] = useState(profile.speechRate ?? 1.0);
+  const [speechPitch, setSpeechPitch] = useState(Number(profile.speechPitch ?? 1.0));
+  const [voicePreset, setVoicePreset] = useState<string>(() =>
+    resolveMuseVoicePreset(profile.voicePreset)
+  );
+  const [voiceAutoSpeak, setVoiceAutoSpeak] = useState<boolean>(profile.voiceAutoSpeak ?? true);
+  const [instantSpeechMode, setInstantSpeechMode] = useState<boolean>(true);
+  const [showVoiceSettings, setShowVoiceSettings] = useState(false);
+  const [liveReady, setLiveReady] = useState<boolean | null>(null);
+  const [activeModel, setActiveModel] = useState('gemini-4-hydrogen');
+  const [activeVoiceName, setActiveVoiceName] = useState<string>(() =>
+    resolveMuseVoicePreset(profile.voicePreset)
+  );
   const [liveStatus, setLiveStatus] = useState<LiveVoiceStatus>('idle');
   const [isMuted, setIsMuted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -132,7 +159,58 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
   const sessionActiveRef = useRef(false);
   const isMutedRef = useRef(false);
   const isPausedRef = useRef(false);
+  const intentionalCloseRef = useRef(false);
+  const reconnectAttemptsRef = useRef(0);
   const turnsRef = useRef<LiveConversationTurn[]>([]);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const activeUtteranceCountRef = useRef(0);
+
+  useEffect(() => {
+    setVoicePreset(resolveMuseVoicePreset(profile.voicePreset));
+    setActiveVoiceName(resolveMuseVoicePreset(profile.voicePreset));
+  }, [profile.voicePreset]);
+
+  useEffect(() => {
+    setSpeechRate(profile.speechRate ?? 1.0);
+  }, [profile.speechRate]);
+
+  useEffect(() => {
+    setSpeechPitch(Number(profile.speechPitch ?? 1.0));
+  }, [profile.speechPitch]);
+
+  useEffect(() => {
+    setVoiceAutoSpeak(profile.voiceAutoSpeak ?? true);
+  }, [profile.voiceAutoSpeak]);
+
+  useEffect(() => {
+    let active = true;
+    getFirebaseIdToken()
+      .then((token) => {
+        if (!active) return null;
+        if (!token) {
+          setLiveReady(false);
+          return null;
+        }
+        return authFetch('/api/live-voice/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ voicePreset, language }),
+        });
+      })
+      .then((r) => (r && r.ok ? r.json() : null))
+      .then((data) => {
+        if (!active || !data) return;
+        setLiveReady(Boolean(data.liveReady));
+        if (data.model) setActiveModel(String(data.model));
+        if (data.voiceName) setActiveVoiceName(String(data.voiceName));
+      })
+      .catch(() => {
+        if (active) setLiveReady(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [voicePreset, language]);
 
   useEffect(() => {
     sessionActiveRef.current = sessionActive;
@@ -159,6 +237,11 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
   }, [sessionActive, isPaused]);
 
   const stopAllPlayback = useCallback(() => {
+    if (streamAbortRef.current) {
+      streamAbortRef.current.abort();
+      streamAbortRef.current = null;
+    }
+    activeUtteranceCountRef.current = 0;
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
@@ -213,6 +296,7 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
     }
 
     if (wsRef.current) {
+      intentionalCloseRef.current = true;
       try {
         if (wsRef.current.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: 'stop' }));
@@ -227,6 +311,7 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
 
   useEffect(() => {
     return () => {
+      intentionalCloseRef.current = true;
       stopAllPlayback();
       teardownMicAndWs();
       if (playbackCtxRef.current && playbackCtxRef.current.state !== 'closed') {
@@ -375,22 +460,25 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
     }
   }, []);
 
-  const speakWithBrowserOrGeminiTts = useCallback(
-    async (text: string, targetLanguage: string, autoContinueListening = false) => {
-      const cleanText = text.replace(/[*`#]/g, '').trim();
-      if (!cleanText) return;
-      lastAiReplyRef.current = cleanText;
-      stopAllPlayback();
-
-      // Primary accessible voice playback via Web Speech API respecting speed & pitch sliders
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        setLiveStatus('speaking');
-        const utterance = new SpeechSynthesisUtterance(cleanText);
-        utterance.lang = getBcp47ForLanguage(targetLanguage);
-        utterance.rate = Math.min(2, Math.max(0.5, speechRate));
-        utterance.pitch = Math.min(2, Math.max(0.5, Number(profile.speechPitch ?? 1.0)));
-        utterance.onstart = () => setLiveStatus('speaking');
-        utterance.onend = () => {
+  const speakSentenceChunk = useCallback(
+    (sentence: string, targetLanguage: string, autoContinueListening = false) => {
+      const clean = sentence.replace(/[*`#]/g, '').trim();
+      if (!clean || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+      const utterance = new SpeechSynthesisUtterance(clean);
+      const targetBcp = getBcp47ForLanguage(targetLanguage);
+      const voices = window.speechSynthesis.getVoices();
+      const chosenVoice = pickPreferredSpeechVoice(voices, targetLanguage);
+      if (chosenVoice) {
+        utterance.voice = chosenVoice;
+      }
+      utterance.lang = chosenVoice?.lang || targetBcp;
+      utterance.rate = Math.min(2, Math.max(0.5, speechRate));
+      utterance.pitch = Math.min(2, Math.max(0.5, speechPitch));
+      activeUtteranceCountRef.current += 1;
+      utterance.onstart = () => setLiveStatus('speaking');
+      const finishChunk = () => {
+        activeUtteranceCountRef.current = Math.max(0, activeUtteranceCountRef.current - 1);
+        if (activeUtteranceCountRef.current === 0) {
           if (sessionActiveRef.current && !isPausedRef.current) {
             setLiveStatus(isMutedRef.current ? 'muted' : 'listening');
             if (autoContinueListening && recognitionRef.current && !isMutedRef.current) {
@@ -403,56 +491,93 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
           } else {
             setLiveStatus(sessionActiveRef.current ? 'paused' : 'idle');
           }
-        };
-        utterance.onerror = () => {
-          setLiveStatus(sessionActiveRef.current ? 'listening' : 'idle');
-        };
-        window.speechSynthesis.speak(utterance);
+        }
+      };
+      utterance.onend = finishChunk;
+      utterance.onerror = finishChunk;
+      setLiveStatus('speaking');
+      window.speechSynthesis.speak(utterance);
+    },
+    [speechPitch, speechRate]
+  );
+
+  const speakWithBrowserOrGeminiTts = useCallback(
+    async (text: string, targetLanguage: string, autoContinueListening = false) => {
+      const cleanText = text.replace(/[*`#]/g, '').trim();
+      if (!cleanText) return;
+      lastAiReplyRef.current = cleanText;
+      stopAllPlayback();
+
+      // Use Studio Gemini Sulafat WAV TTS only when instant streaming speech mode is switched OFF
+      if (liveReady && !instantSpeechMode) {
+        try {
+          setLiveStatus('speaking');
+          const resp = await authFetch('/api/ai/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: cleanText.slice(0, 900),
+              language: targetLanguage,
+              voicePreset,
+            }),
+          });
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data.audioBase64) {
+              const audio = new Audio(
+                `data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`
+              );
+              htmlAudioRef.current = audio;
+              audio.playbackRate = Math.min(2, Math.max(0.5, speechRate));
+              audio.onended = () => {
+                if (sessionActiveRef.current && !isPausedRef.current) {
+                  setLiveStatus(isMutedRef.current ? 'muted' : 'listening');
+                  if (autoContinueListening && recognitionRef.current && !isMutedRef.current) {
+                    try {
+                      recognitionRef.current.start();
+                    } catch {
+                      // ignore
+                    }
+                  }
+                } else {
+                  setLiveStatus(sessionActiveRef.current ? 'paused' : 'idle');
+                }
+              };
+              await audio.play();
+              return;
+            }
+          }
+        } catch {
+          // Fall through cleanly to instant Web Speech API
+        }
+      }
+
+      // Fast Browser SpeechSynthesis prioritizing Indian English (en-IN) or active Indian language
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        speakSentenceChunk(cleanText, targetLanguage, autoContinueListening);
         return;
       }
 
-      // Secondary high-quality Gemini TTS fallback for browsers without speechSynthesis
-      try {
-        setLiveStatus('speaking');
-        const resp = await fetch('/api/ai/tts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: cleanText.slice(0, 900), language: targetLanguage }),
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data.audioBase64) {
-            const audio = new Audio(`data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`);
-            htmlAudioRef.current = audio;
-            audio.playbackRate = speechRate;
-            audio.onended = () => {
-              setLiveStatus(sessionActiveRef.current ? (isMutedRef.current ? 'muted' : 'listening') : 'idle');
-            };
-            await audio.play();
-            return;
-          }
-        }
-      } catch {
-        // Ignore TTS network fallback notice cleanly
-      }
       setLiveStatus(sessionActiveRef.current ? 'listening' : 'idle');
     },
-    [profile.speechPitch, speechRate, stopAllPlayback]
+    [instantSpeechMode, liveReady, speakSentenceChunk, speechRate, stopAllPlayback, voicePreset]
   );
 
   const appendTurn = useCallback((role: 'user' | 'ai', text: string, lang: string) => {
     const clean = text.trim();
     if (!clean) return;
+    const turnId = `vt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     setTurns((prev) => [
       ...prev,
       {
-        id: `vt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        id: turnId,
         role,
         text: clean,
         language: lang,
         createdAt: new Date().toISOString(),
       },
     ]);
+    return turnId;
   }, []);
 
   const processUserUtterance = useCallback(
@@ -539,7 +664,7 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
 
       if (cmd.type === 'search' && cmd.argument && onOpenSearch) {
         appendTurn('user', clean, language);
-        setStatusNotice(`Searching Muse AI resources for "${cmd.argument}"...`);
+        setStatusNotice(`Searching Nano AI resources for "${cmd.argument}"...`);
       } else {
         appendTurn('user', clean, language);
       }
@@ -556,10 +681,132 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
         return;
       }
 
-      // Otherwise call context-aware /api/ai/voice-converse + spoken TTS
+      // Fast low-latency streaming response: speak complete sentences immediately as they arrive!
       setLiveStatus('thinking');
+      stopAllPlayback();
+
+      if (instantSpeechMode) {
+        const controller = new AbortController();
+        streamAbortRef.current = controller;
+        const aiTurnId = `vt_${Date.now()}_stream`;
+        let fullAnswer = '';
+        let speechBuffer = '';
+        let hasSpokenAny = false;
+
+        try {
+          const resp = await authFetch('/api/ai/voice-converse/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              question: clean,
+              commandType: cmd.type,
+              board: profile.board,
+              classLevel: profile.classLevel,
+              displayName: profile.displayName,
+              academicGoal: profile.academicGoal,
+              language: activeLang,
+              history: turnsRef.current.slice(-6).map((t) => ({ role: t.role, text: t.text })),
+            }),
+          });
+
+          const contentType = resp.headers.get('content-type') || '';
+          if (resp.ok && resp.body && contentType.includes('text/event-stream')) {
+            setTurns((prev) => [
+              ...prev,
+              {
+                id: aiTurnId,
+                role: 'ai',
+                text: '...',
+                language: activeLang,
+                createdAt: new Date().toISOString(),
+              },
+            ]);
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let sseBuffer = '';
+
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              sseBuffer += decoder.decode(value, { stream: true });
+              const lines = sseBuffer.split('\n');
+              sseBuffer = lines.pop() ?? '';
+
+              for (const rawLine of lines) {
+                const line = rawLine.trim();
+                if (!line.startsWith('data:')) continue;
+                const payloadRaw = line.slice(5).trim();
+                if (!payloadRaw) continue;
+                let evt: { delta?: string; answer?: string; done?: boolean; error?: string };
+                try {
+                  evt = JSON.parse(payloadRaw);
+                } catch {
+                  continue;
+                }
+                if (evt.error) {
+                  throw new Error(evt.error);
+                }
+                if (evt.delta) {
+                  fullAnswer += evt.delta;
+                  speechBuffer += evt.delta;
+                  const { sentences, remainder } = extractCompleteSpeechSentences(speechBuffer);
+                  if (sentences.length > 0) {
+                    speechBuffer = remainder;
+                    for (const s of sentences) {
+                      hasSpokenAny = true;
+                      speakSentenceChunk(s, activeLang, false);
+                    }
+                  }
+                  const snapshot = fullAnswer.trim();
+                  setTurns((prev) =>
+                    prev.map((t) => (t.id === aiTurnId ? { ...t, text: snapshot || '...' } : t))
+                  );
+                }
+                if (evt.done) {
+                  if (evt.answer && evt.answer.trim()) {
+                    fullAnswer = evt.answer.trim();
+                  }
+                  const leftover = speechBuffer.replace(/[*`#]/g, '').trim();
+                  if (leftover) {
+                    speechBuffer = '';
+                    hasSpokenAny = true;
+                    speakSentenceChunk(leftover, activeLang, sessionActiveRef.current);
+                  } else if (!hasSpokenAny && fullAnswer) {
+                    speakSentenceChunk(fullAnswer, activeLang, sessionActiveRef.current);
+                  }
+                }
+              }
+            }
+
+            if (fullAnswer.trim()) {
+              lastAiReplyRef.current = fullAnswer.trim();
+              setTurns((prev) =>
+                prev.map((t) => (t.id === aiTurnId ? { ...t, text: fullAnswer.trim() } : t))
+              );
+              if (activeUtteranceCountRef.current === 0 && !speechBuffer.trim()) {
+                setLiveStatus(sessionActiveRef.current ? (isMutedRef.current ? 'muted' : 'listening') : 'idle');
+              }
+              return;
+            }
+          }
+        } catch (err: unknown) {
+          if (controller.signal.aborted) return;
+          setTurns((prev) => prev.filter((t) => t.id !== aiTurnId || (t.text && t.text !== '...')));
+          if (err instanceof Error && err.message && !err.message.includes('network')) {
+            // Fall through cleanly to single-shot JSON endpoint below
+          }
+        } finally {
+          if (streamAbortRef.current === controller) {
+            streamAbortRef.current = null;
+          }
+        }
+      }
+
+      // Single-shot JSON endpoint fallback (used for Studio Sulafat Audio or if stream failed)
       try {
-        const resp = await fetch('/api/ai/voice-converse', {
+        const resp = await authFetch('/api/ai/voice-converse', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -570,7 +817,7 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
             displayName: profile.displayName,
             academicGoal: profile.academicGoal,
             language: activeLang,
-            history: turnsRef.current.slice(-8).map((t) => ({ role: t.role, text: t.text })),
+            history: turnsRef.current.slice(-6).map((t) => ({ role: t.role, text: t.text })),
           }),
         });
         const data = await resp.json();
@@ -588,12 +835,14 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
     },
     [
       appendTurn,
+      instantSpeechMode,
       language,
       onOpenSearch,
       profile.academicGoal,
       profile.board,
       profile.classLevel,
       profile.displayName,
+      speakSentenceChunk,
       speakWithBrowserOrGeminiTts,
       stopAllPlayback,
       transportLabel,
@@ -657,7 +906,7 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
                 // ignore
               }
             }
-          }, 350);
+          }, 60);
         }
       };
 
@@ -677,9 +926,166 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
     [language, processUserUtterance]
   );
 
+  const connectLiveWebSocket = useCallback(
+    async (stream: MediaStream | null) => {
+      try {
+        const token = await getFirebaseIdToken();
+        if (!token) {
+          startSpeechFallbackLoop(stream || undefined);
+          return;
+        }
+        intentionalCloseRef.current = false;
+        const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${wsProto}//${window.location.host}/api/live-voice`, [`bearer.${token}`]);
+        wsRef.current = ws;
+
+        const fallbackTimeout = window.setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) {
+            intentionalCloseRef.current = true;
+            ws.close();
+            startSpeechFallbackLoop(stream || undefined);
+          }
+        }, 1000);
+
+        ws.onopen = () => {
+          window.clearTimeout(fallbackTimeout);
+          ws.send(
+            JSON.stringify({
+              type: 'start',
+              language,
+              voicePreset,
+              profile: {
+                displayName: profile.displayName,
+                board: profile.board,
+                classLevel: profile.classLevel,
+                preferredLanguage: profile.preferredLanguage,
+                academicGoal: profile.academicGoal,
+                voicePreset,
+              },
+            })
+          );
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(String(event.data || '{}'));
+            if (msg.type === 'ready') {
+              reconnectAttemptsRef.current = 0;
+              if (msg.model) setActiveModel(String(msg.model));
+              if (msg.voiceName) setActiveVoiceName(String(msg.voiceName));
+              setTransportLabel('gemini_live');
+              setSessionActive(true);
+              setLiveStatus('listening');
+              setStatusNotice(
+                `Connected to Muse (${msg.voiceName || voicePreset}) · Indian English & Indian Languages. Speak naturally!`
+              );
+
+              if (stream && micAudioCtxRef.current && !processorRef.current) {
+                const ctx = micAudioCtxRef.current;
+                const src = ctx.createMediaStreamSource(stream);
+                const processor = ctx.createScriptProcessor(2048, 1, 1);
+                processorRef.current = processor;
+                processor.onaudioprocess = (ev) => {
+                  if (isMutedRef.current || isPausedRef.current || ws.readyState !== WebSocket.OPEN) return;
+                  const inputData = ev.inputBuffer.getChannelData(0);
+                  const downsampled = downsampleBuffer(inputData, ctx.sampleRate, 16000);
+                  const b64 = pcmFloat32ToInt16Base64(downsampled);
+                  ws.send(JSON.stringify({ type: 'audio', data: b64 }));
+                };
+                src.connect(processor);
+                processor.connect(ctx.destination);
+              }
+            } else if (msg.type === 'input_transcript' && msg.text) {
+              liveInputBufferRef.current = `${liveInputBufferRef.current} ${msg.text}`.trim();
+              setInterimTranscript(liveInputBufferRef.current);
+            } else if (msg.type === 'output_transcript' && msg.text) {
+              if (liveInputBufferRef.current) {
+                appendTurn('user', liveInputBufferRef.current, language);
+                liveInputBufferRef.current = '';
+                setInterimTranscript('');
+              }
+              liveOutputBufferRef.current = `${liveOutputBufferRef.current} ${msg.text}`.trim();
+            } else if (msg.type === 'audio' && msg.data) {
+              schedulePcm24kAudio(msg.data);
+            } else if (msg.type === 'interrupted') {
+              stopAllPlayback();
+              setLiveStatus('listening');
+            } else if (msg.type === 'turn_complete') {
+              if (liveInputBufferRef.current) {
+                appendTurn('user', liveInputBufferRef.current, language);
+                liveInputBufferRef.current = '';
+                setInterimTranscript('');
+              }
+              if (liveOutputBufferRef.current) {
+                lastAiReplyRef.current = liveOutputBufferRef.current;
+                appendTurn('ai', liveOutputBufferRef.current, language);
+                liveOutputBufferRef.current = '';
+              }
+              if (activeSourcesRef.current.length === 0 && sessionActiveRef.current) {
+                setLiveStatus(isMutedRef.current ? 'muted' : 'listening');
+              }
+            } else if (msg.type === 'error') {
+              intentionalCloseRef.current = true;
+              ws.close();
+              if (msg.code === 'AI_NOT_CONFIGURED') {
+                setErrorMsg(msg.message);
+              }
+              startSpeechFallbackLoop(stream || undefined);
+            }
+          } catch {
+            // ignore malformed WS frames
+          }
+        };
+
+        ws.onerror = () => {
+          window.clearTimeout(fallbackTimeout);
+          if (!intentionalCloseRef.current) {
+            startSpeechFallbackLoop(stream || undefined);
+          }
+        };
+
+        ws.onclose = () => {
+          window.clearTimeout(fallbackTimeout);
+          if (
+            !intentionalCloseRef.current &&
+            sessionActiveRef.current &&
+            transportLabel === 'gemini_live' &&
+            reconnectAttemptsRef.current < 2
+          ) {
+            reconnectAttemptsRef.current += 1;
+            setStatusNotice(`Reconnecting Muse Live Voice (${reconnectAttemptsRef.current}/2)...`);
+            window.setTimeout(() => {
+              if (sessionActiveRef.current && !intentionalCloseRef.current) {
+                connectLiveWebSocket(mediaStreamRef.current);
+              }
+            }, 900);
+          }
+        };
+      } catch {
+        startSpeechFallbackLoop(stream || undefined);
+      }
+    },
+    [
+      appendTurn,
+      language,
+      profile.academicGoal,
+      profile.board,
+      profile.classLevel,
+      profile.displayName,
+      profile.preferredLanguage,
+      schedulePcm24kAudio,
+      startSpeechFallbackLoop,
+      stopAllPlayback,
+      transportLabel,
+      voicePreset,
+    ]
+  );
+
   const startLiveTalk = async () => {
     setErrorMsg(null);
     setStatusNotice(null);
+    reconnectAttemptsRef.current = 0;
+    intentionalCloseRef.current = false;
     stopAllPlayback();
     teardownMicAndWs();
     setElapsedSeconds(0);
@@ -722,111 +1128,17 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
       return;
     }
 
-    // Attempt Gemini Live WebSocket real-time speech-to-speech bridge first
-    try {
-      const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${wsProto}//${window.location.host}/api/live-voice`);
-      wsRef.current = ws;
-
-      const fallbackTimeout = window.setTimeout(() => {
-        if (ws.readyState !== WebSocket.OPEN) {
-          ws.close();
-          startSpeechFallbackLoop(stream || undefined);
-        }
-      }, 3000);
-
-      ws.onopen = () => {
-        window.clearTimeout(fallbackTimeout);
-        ws.send(
-          JSON.stringify({
-            type: 'start',
-            language,
-            profile: {
-              displayName: profile.displayName,
-              board: profile.board,
-              classLevel: profile.classLevel,
-              preferredLanguage: profile.preferredLanguage,
-              academicGoal: profile.academicGoal,
-            },
-          })
-        );
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(String(event.data || '{}'));
-          if (msg.type === 'ready') {
-            setTransportLabel('gemini_live');
-            setSessionActive(true);
-            setLiveStatus('listening');
-            setStatusNotice('Connected to Muse Live Voice (Real-Time Gemini Audio). Speak naturally!');
-
-            if (stream && micAudioCtxRef.current) {
-              const ctx = micAudioCtxRef.current;
-              const src = ctx.createMediaStreamSource(stream);
-              const processor = ctx.createScriptProcessor(2048, 1, 1);
-              processorRef.current = processor;
-              processor.onaudioprocess = (ev) => {
-                if (isMutedRef.current || isPausedRef.current || ws.readyState !== WebSocket.OPEN) return;
-                const inputData = ev.inputBuffer.getChannelData(0);
-                const downsampled = downsampleBuffer(inputData, ctx.sampleRate, 16000);
-                const b64 = pcmFloat32ToInt16Base64(downsampled);
-                ws.send(JSON.stringify({ type: 'audio', data: b64 }));
-              };
-              src.connect(processor);
-              processor.connect(ctx.destination);
-            }
-          } else if (msg.type === 'input_transcript' && msg.text) {
-            liveInputBufferRef.current = `${liveInputBufferRef.current} ${msg.text}`.trim();
-            setInterimTranscript(liveInputBufferRef.current);
-          } else if (msg.type === 'output_transcript' && msg.text) {
-            if (liveInputBufferRef.current) {
-              appendTurn('user', liveInputBufferRef.current, language);
-              liveInputBufferRef.current = '';
-              setInterimTranscript('');
-            }
-            liveOutputBufferRef.current = `${liveOutputBufferRef.current} ${msg.text}`.trim();
-          } else if (msg.type === 'audio' && msg.data) {
-            schedulePcm24kAudio(msg.data);
-          } else if (msg.type === 'interrupted') {
-            stopAllPlayback();
-            setLiveStatus('listening');
-          } else if (msg.type === 'turn_complete') {
-            if (liveInputBufferRef.current) {
-              appendTurn('user', liveInputBufferRef.current, language);
-              liveInputBufferRef.current = '';
-              setInterimTranscript('');
-            }
-            if (liveOutputBufferRef.current) {
-              lastAiReplyRef.current = liveOutputBufferRef.current;
-              appendTurn('ai', liveOutputBufferRef.current, language);
-              liveOutputBufferRef.current = '';
-            }
-            if (activeSourcesRef.current.length === 0 && sessionActiveRef.current) {
-              setLiveStatus(isMutedRef.current ? 'muted' : 'listening');
-            }
-          } else if (msg.type === 'error') {
-            ws.close();
-            if (msg.code === 'AI_NOT_CONFIGURED') {
-              setErrorMsg(msg.message);
-            }
-            startSpeechFallbackLoop(stream || undefined);
-          }
-        } catch {
-          // ignore malformed WS frames
-        }
-      };
-
-      ws.onerror = () => {
-        window.clearTimeout(fallbackTimeout);
-        startSpeechFallbackLoop(stream || undefined);
-      };
-    } catch {
+    if (liveReady === false) {
       startSpeechFallbackLoop(stream || undefined);
+      return;
     }
+
+    connectLiveWebSocket(stream);
   };
 
   const endLiveConversation = () => {
+    intentionalCloseRef.current = true;
+    reconnectAttemptsRef.current = 0;
     stopAllPlayback();
     teardownMicAndWs();
     setSessionActive(false);
@@ -895,6 +1207,37 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
     setStatusNotice('Saved this Live Talk conversation to Revision Centre → Saved Notes.');
   };
 
+  const handleTestMuseVoice = () => {
+    setErrorMsg(null);
+    if (liveReady) {
+      processUserUtterance(MUSE_TEST_PROMPT);
+      return;
+    }
+    appendTurn('user', MUSE_TEST_PROMPT, language);
+    appendTurn('ai', MUSE_TEST_EXPECTED_INTRO, language);
+    setStatusNotice(
+      `Playing Muse voice preview (${activeVoiceName} · Indian English style). Add GEMINI_API_KEY in server Secrets for full live conversational Gemini audio.`
+    );
+    speakWithBrowserOrGeminiTts(MUSE_TEST_EXPECTED_INTRO, language, false);
+  };
+
+  const persistVoicePrefs = (
+    nextAutoSpeak: boolean,
+    nextRate: number,
+    nextPreset: string,
+    nextPitch: number
+  ) => {
+    setVoiceAutoSpeak(nextAutoSpeak);
+    setSpeechRate(nextRate);
+    setVoicePreset(nextPreset);
+    setActiveVoiceName(nextPreset);
+    setSpeechPitch(nextPitch);
+    onSaveVoicePreference?.(nextAutoSpeak, nextRate, nextPreset, nextPitch);
+  };
+
+  const activePresetMeta =
+    GEMINI_VOICE_PRESETS.find((v) => v.id === voicePreset) || GEMINI_VOICE_PRESETS[0];
+
   const statusBadgeLabel: Record<LiveVoiceStatus, string> = {
     idle: 'Ready to Talk',
     connecting: 'Connecting Live Voice...',
@@ -908,17 +1251,46 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
 
   return (
     <div className="space-y-5 max-w-5xl mx-auto">
-      {/* Top Mode & Language Header */}
-      <div className="muse-card p-5 flex flex-wrap items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="inline-flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-sky-400">
-            <Radio className="w-3.5 h-3.5" />
-            <span>MUSE AI · LIVE VOICE CONVERSATION SYSTEM</span>
+      {/* Top Mode, Muse Voice Identity & Language Header */}
+      <div className="muse-card p-5 flex flex-wrap items-center justify-between gap-4 bg-gradient-to-br from-[#0f172a] via-[#131836] to-[#1e103d] border border-purple-500/25">
+        <div className="flex items-center gap-4">
+          {/* Animated Muse Voice Avatar */}
+          <div
+            data-testid="muse-voice-avatar"
+            className={`relative w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 border transition-all ${
+              liveStatus === 'speaking'
+                ? 'bg-gradient-to-br from-purple-600 to-blue-600 border-purple-300/60 shadow-lg shadow-purple-500/30 animate-pulse'
+                : liveStatus === 'listening'
+                  ? 'bg-gradient-to-br from-blue-600 to-indigo-700 border-sky-300/60 shadow-lg shadow-sky-500/25'
+                  : liveStatus === 'thinking' || liveStatus === 'connecting'
+                    ? 'bg-gradient-to-br from-amber-500/80 to-purple-700 border-amber-300/60 animate-pulse'
+                    : 'bg-gradient-to-br from-indigo-950 to-purple-950 border-purple-400/30'
+            }`}
+          >
+            <Bot className="w-7 h-7 text-white" />
+            <span
+              className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-[#0f172a] ${
+                liveStatus === 'speaking'
+                  ? 'bg-purple-400'
+                  : liveStatus === 'listening'
+                    ? 'bg-sky-400'
+                    : liveStatus === 'muted' || liveStatus === 'paused'
+                      ? 'bg-rose-400'
+                      : 'bg-emerald-400'
+              }`}
+            />
           </div>
-          <h1 className="font-display font-bold text-xl">Live Talk &amp; Voice AI Companion</h1>
-          <p className="text-xs text-[var(--text-muted)]">
-            Speak naturally, interrupt mid-answer, switch languages anytime, and get instant intelligent spoken responses.
-          </p>
+
+          <div className="space-y-1">
+            <div className="inline-flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-purple-300">
+              <Radio className="w-3.5 h-3.5 text-sky-400" />
+              <span>NANO AI LIVE · FRIENDLY ASSISTANT · INDIAN ENGLISH (en-IN)</span>
+            </div>
+            <h1 className="font-display font-bold text-xl text-white">Live Talk &amp; Nano Voice AI</h1>
+            <p className="text-xs text-slate-300">
+              Voice: <strong className="text-purple-200">{activePresetMeta.label}</strong> · Mode: <strong className="text-sky-200">{instantSpeechMode ? 'Instant Streaming Voice (<1s)' : 'Studio Gemini Sulafat Audio'}</strong>
+            </p>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -926,7 +1298,7 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
             <button
               type="button"
               onClick={() => setViewMode('live_talk')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 ${
                 viewMode === 'live_talk' ? 'muse-btn-primary' : 'text-[var(--text-secondary)]'
               }`}
             >
@@ -935,7 +1307,7 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
             <button
               type="button"
               onClick={() => setViewMode('classic')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 ${
                 viewMode === 'classic' ? 'muse-btn-primary' : 'text-[var(--text-secondary)]'
               }`}
             >
@@ -959,21 +1331,115 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
             </select>
           </div>
 
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs">
-            <Volume2 className="w-3.5 h-3.5 text-purple-400" />
-            <select
-              aria-label="Voice speed"
-              value={String(speechRate)}
-              onChange={(e) => setSpeechRate(Number(e.target.value))}
-              className="bg-transparent focus:outline-none tabular-nums"
-            >
-              <option value="0.85">0.85x Calm</option>
-              <option value="1">1.0x Normal</option>
-              <option value="1.2">1.2x Fast</option>
-            </select>
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowVoiceSettings((v) => !v)}
+            aria-expanded={showVoiceSettings}
+            className="px-3 py-1.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-purple-400/50 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5 text-purple-400" />
+            <span>Voice Settings</span>
+          </button>
         </div>
       </div>
+
+      {showVoiceSettings && (
+        <div
+          data-testid="voice-ai-settings-panel"
+          className="muse-card p-4 border border-purple-500/30 grid grid-cols-1 md:grid-cols-5 gap-4 items-end"
+        >
+          <div className="space-y-1">
+            <label htmlFor="voice-ai-preset" className="text-[11px] font-semibold text-[var(--text-muted)] block">
+              Nano Voice Preset
+            </label>
+            <select
+              id="voice-ai-preset"
+              value={voicePreset}
+              onChange={(e) => persistVoicePrefs(voiceAutoSpeak, speechRate, e.target.value, speechPitch)}
+              className="w-full px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
+            >
+              {GEMINI_VOICE_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <label htmlFor="voice-ai-speed-mode" className="text-[11px] font-semibold text-[var(--text-muted)] block">
+              Response Audio Engine
+            </label>
+            <button
+              id="voice-ai-speed-mode"
+              type="button"
+              onClick={() => setInstantSpeechMode((v) => !v)}
+              className={`w-full px-3 py-2 rounded-xl text-xs font-semibold border transition text-left ${
+                instantSpeechMode
+                  ? 'bg-sky-600/20 border-sky-400/50 text-sky-200'
+                  : 'bg-purple-600/20 border-purple-400/50 text-purple-200'
+              }`}
+            >
+              {instantSpeechMode ? 'Instant Streaming Voice (Fastest)' : 'Studio Gemini Sulafat Audio'}
+            </button>
+          </div>
+
+          <div className="space-y-1">
+            <label htmlFor="voice-ai-rate" className="text-[11px] font-semibold text-[var(--text-muted)] block">
+              Speaking Speed ({speechRate.toFixed(2)}x)
+            </label>
+            <input
+              id="voice-ai-rate"
+              type="range"
+              min="0.7"
+              max="1.5"
+              step="0.05"
+              value={speechRate}
+              onChange={(e) =>
+                persistVoicePrefs(voiceAutoSpeak, Number(e.target.value), voicePreset, speechPitch)
+              }
+              className="w-full"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label htmlFor="voice-ai-pitch" className="text-[11px] font-semibold text-[var(--text-muted)] block">
+              Pitch ({speechPitch.toFixed(2)})
+            </label>
+            <input
+              id="voice-ai-pitch"
+              type="range"
+              min="0.7"
+              max="1.4"
+              step="0.05"
+              value={speechPitch}
+              onChange={(e) =>
+                persistVoicePrefs(voiceAutoSpeak, speechRate, voicePreset, Number(e.target.value))
+              }
+              className="w-full"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={handleTestMuseVoice}
+              className="px-3.5 py-2 rounded-xl text-xs font-semibold muse-btn-primary w-full whitespace-nowrap"
+            >
+              Test Nano Voice
+            </button>
+            {voicePreset !== DEFAULT_MUSE_VOICE_PRESET && (
+              <button
+                type="button"
+                onClick={() => persistVoicePrefs(voiceAutoSpeak, 1.0, DEFAULT_MUSE_VOICE_PRESET, 1.0)}
+                className="px-3 py-2 rounded-xl text-xs bg-[var(--bg-elevated)] border border-[var(--border-subtle)] shrink-0"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {errorMsg && (
         <div
@@ -1056,7 +1522,7 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
             </span>
             {sessionActive && (
               <span className="text-[11px] text-[var(--text-muted)]">
-                · {transportLabel === 'gemini_live' ? 'Gemini Live Real-Time Audio' : 'Speech + Gemini Voice'}
+                · {transportLabel === 'gemini_live' ? `Gemini Live (${activeModel} · ${activeVoiceName})` : `Muse Fallback (${activeVoiceName} · en-IN)`}
               </span>
             )}
           </div>
@@ -1069,25 +1535,25 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
         </div>
 
         {/* Animated Waveform Visualizer */}
-        <div className="relative">
-          <canvas
-            ref={canvasRef}
-            width={820}
-            height={160}
-            data-testid="voice-waveform-canvas"
-            aria-label="Live Voice AI real-time audio waveform"
-            className="w-full h-40 rounded-2xl border border-[var(--border-subtle)]"
-          />
+        <div className="space-y-2.5">
           {viewMode === 'live_talk' && !sessionActive && turns.length === 0 && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-4 text-center">
-              <div className="text-sm font-display font-bold text-white/90">
-                Hello {profile.displayName}! I&apos;m Muse, your live AI partner.
+            <div className="rounded-xl bg-[#0f172a]/85 border border-purple-500/20 px-4 py-3 text-center">
+              <div className="text-sm font-display font-bold text-white">
+                Hello {profile.displayName}! I&apos;m Muse ({activeVoiceName}), your friendly AI partner.
               </div>
               <div className="text-xs text-slate-300 mt-1">
-                Press Start Talking below or ask in {language} using voice or text.
+                Press Start Talking below, test Muse&apos;s voice, or speak naturally in {language}.
               </div>
             </div>
           )}
+          <canvas
+            ref={canvasRef}
+            width={820}
+            height={128}
+            data-testid="voice-waveform-canvas"
+            aria-label="Live Voice AI real-time audio waveform"
+            className="w-full h-32 rounded-2xl border border-purple-500/25 block"
+          />
         </div>
 
         {/* Large Primary Controls */}
@@ -1112,6 +1578,15 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
                 <span>End Conversation</span>
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={handleTestMuseVoice}
+              className="px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-purple-600/20 border border-purple-500/40 text-purple-200 hover:bg-purple-600/30 flex items-center gap-1.5"
+            >
+              <Volume2 className="w-3.5 h-3.5 text-purple-300" />
+              <span>Test Muse Voice</span>
+            </button>
 
             <button
               type="button"
@@ -1286,7 +1761,7 @@ export const VoiceAIView: React.FC<VoiceAIViewProps> = ({
               >
                 <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--text-muted)]">
                   <span className="font-semibold">
-                    {turn.role === 'user' ? 'You' : 'Muse AI'} · {turn.language} ·{' '}
+              {turn.role === 'user' ? 'You' : 'Nano AI'} · {turn.language} ·{' '}
                     {new Date(turn.createdAt).toLocaleTimeString()}
                   </span>
                   {turn.role === 'ai' && (

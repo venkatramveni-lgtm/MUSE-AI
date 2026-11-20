@@ -30,7 +30,13 @@ import {
   filterImageLibrary,
   ImageCollectionFilter,
 } from '../utils/academyUtils';
+import {
+  filterByStudentClass,
+  getClassPromptChips,
+  prioritizeByClassAndProfile,
+} from '../utils/curriculumFilter';
 import { validateDocumentUpload } from '../utils/plannerUtils';
+import { authFetch } from '../services/firebaseClient';
 import { XRSpatialLab } from './XRSpatialLab';
 
 interface ImageAcademyViewProps {
@@ -47,6 +53,7 @@ interface ImageAcademyViewProps {
   onSaveNote: (note: SavedNote) => void;
   onOpenLesson: (lessonId: string) => void;
   onAskAITeacher: (subject?: string, initialPrompt?: string) => void;
+  onAskDocFollowUp?: (doc: UploadedDocItem, subject?: string) => void;
 }
 
 export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
@@ -63,15 +70,19 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
   onSaveNote,
   onOpenLesson,
   onAskAITeacher,
+  onAskDocFollowUp,
 }) => {
   const [studioMode, setStudioMode] = useState<'library' | 'ai_visuals'>('library');
   const [search, setSearch] = useState('');
   const [boardFilter, setBoardFilter] = useState('ALL');
+  const [myClassOnly, setMyClassOnly] = useState<boolean>(true);
   const [classFilter, setClassFilter] = useState('ALL');
   const [subjectFilter, setSubjectFilter] = useState('ALL');
   const [collectionFilter, setCollectionFilter] = useState<ImageCollectionFilter>('all');
 
-  const [selectedId, setSelectedId] = useState<string>(images[0]?.id || '');
+  const [selectedId, setSelectedId] = useState<string>(
+    () => prioritizeByClassAndProfile(images, profile)[0]?.id || images[0]?.id || ''
+  );
   const [activeHotspotIdx, setActiveHotspotIdx] = useState(0);
   const [showHotspots, setShowHotspots] = useState(true);
   const [zoomScale, setZoomScale] = useState(1);
@@ -79,9 +90,15 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
   const [brokenImgIds, setBrokenImgIds] = useState<Record<string, boolean>>({});
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
+  const classChips = useMemo(() => getClassPromptChips(profile.classLevel), [profile.classLevel]);
+
   // AI Visual Diagram Studio state
-  const [diagramTopic, setDiagramTopic] = useState('Human Heart Blood Circulation');
-  const [diagramSubject, setDiagramSubject] = useState(profile.subjects[0] || 'Science');
+  const [diagramTopic, setDiagramTopic] = useState(
+    classChips[0]?.topic || 'Human Heart Blood Circulation'
+  );
+  const [diagramSubject, setDiagramSubject] = useState(
+    classChips[0]?.subject || profile.subjects[0] || 'Science'
+  );
   const [diagramLanguage, setDiagramLanguage] = useState(profile.preferredLanguage || 'English');
   const [diagramLoading, setDiagramLoading] = useState(false);
   const [diagramError, setDiagramError] = useState<string | null>(null);
@@ -91,22 +108,27 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
   const studiedSet = useMemo(() => new Set(studiedIds), [studiedIds]);
   const bookmarkedSet = useMemo(() => new Set(bookmarkedIds), [bookmarkedIds]);
 
-  const filteredImages = useMemo(
-    () =>
-      filterImageLibrary(images, {
-        board: boardFilter,
-        classLevel: classFilter,
-        subject: subjectFilter,
-        search,
-        collectionFilter,
-        studiedIds,
-        bookmarkedIds,
-      }),
-    [images, boardFilter, classFilter, subjectFilter, search, collectionFilter, studiedIds, bookmarkedIds]
-  );
+  const filteredImages = useMemo(() => {
+    const base = filterImageLibrary(images, {
+      board: boardFilter,
+      classLevel: classFilter,
+      subject: subjectFilter,
+      search,
+      collectionFilter,
+      studiedIds,
+      bookmarkedIds,
+    });
+    const ranked = prioritizeByClassAndProfile(base, profile);
+    return classFilter === 'ALL'
+      ? filterByStudentClass(ranked, profile.classLevel, myClassOnly)
+      : ranked;
+  }, [images, boardFilter, classFilter, subjectFilter, search, collectionFilter, studiedIds, bookmarkedIds, profile, myClassOnly]);
 
   const activeImage =
-    images.find((img) => img.id === selectedId) || filteredImages[0] || images[0];
+    filteredImages.find((img) => img.id === selectedId) ||
+    filteredImages[0] ||
+    images.find((img) => img.id === selectedId) ||
+    images[0];
 
   const activeHotspot =
     activeImage?.hotspots[activeHotspotIdx] || activeImage?.hotspots[0] || null;
@@ -129,13 +151,55 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
     a.click();
   };
 
+  const handleDownloadGeneratedSvg = (vis: GeneratedVisualDiagram) => {
+    if (!vis.svgMarkup) return;
+    const blob = new Blob([vis.svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${vis.id}.svg`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadGeneratedPng = (vis: GeneratedVisualDiagram) => {
+    if (!vis.svgMarkup) return;
+    const svgBlob = new Blob([vis.svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 960;
+      canvas.height = 560;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#070d1a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((pngBlob) => {
+          if (pngBlob) {
+            const pngUrl = URL.createObjectURL(pngBlob);
+            const a = document.createElement('a');
+            a.href = pngUrl;
+            a.download = `${vis.id}.png`;
+            a.click();
+            URL.revokeObjectURL(pngUrl);
+          }
+        }, 'image/png');
+      }
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+  };
+
   const handleGenerateDiagram = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!diagramTopic.trim() || diagramLoading) return;
     setDiagramLoading(true);
     setDiagramError(null);
     try {
-      const resp = await fetch('/api/ai/visual-diagram', {
+      const resp = await authFetch('/api/ai/visual-diagram', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -191,7 +255,7 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
         reader.onerror = () => reject(new Error('Could not read image file.'));
         reader.readAsDataURL(file);
       });
-      const resp = await fetch('/api/ai/analyze-document', {
+      const resp = await authFetch('/api/ai/analyze-document', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -265,6 +329,20 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
         {studioMode === 'library' && (
           <>
             <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setMyClassOnly((m) => !m);
+                  setClassFilter('ALL');
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border ${
+                  myClassOnly && classFilter === 'ALL'
+                    ? 'bg-purple-600 text-white border-purple-500'
+                    : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                }`}
+              >
+                My Class ({profile.classLevel})
+              </button>
               {(
                 [
                   { id: 'all', label: `All Visuals (${images.length})` },
@@ -275,9 +353,12 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setCollectionFilter(tab.id)}
+                  onClick={() => {
+                    setCollectionFilter(tab.id);
+                    if (tab.id === 'all') setMyClassOnly(false);
+                  }}
                   className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border ${
-                    collectionFilter === tab.id
+                    collectionFilter === tab.id && !(tab.id === 'all' && myClassOnly)
                       ? 'bg-blue-600 text-white border-blue-500'
                       : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
                   }`}
@@ -313,10 +394,13 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
               <select
                 aria-label="Filter visuals by class"
                 value={classFilter}
-                onChange={(e) => setClassFilter(e.target.value)}
+                onChange={(e) => {
+                  setClassFilter(e.target.value);
+                  if (e.target.value !== 'ALL') setMyClassOnly(false);
+                }}
                 className="px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
               >
-                <option value="ALL">All Classes (1–10)</option>
+                <option value="ALL">All Classes (1–12)</option>
                 {CLASS_LEVELS.map((c) => (
                   <option key={c} value={c}>Class {c}</option>
                 ))}
@@ -343,7 +427,7 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
           <aside className="lg:col-span-4 space-y-3">
             {filteredImages.length === 0 ? (
               <div className="muse-card p-5 text-xs text-[var(--text-muted)]">
-                No educational visuals match these filters. Clear filters to view all Muse Image Academy plates.
+                No educational visuals match these filters. Clear filters to view all Nano AI Image Academy plates.
               </div>
             ) : (
               filteredImages.map((img) => {
@@ -604,7 +688,7 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
                     className="px-3.5 py-2 rounded-xl text-xs font-semibold muse-btn-primary flex items-center gap-1.5"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>Explain with Muse AI</span>
+                    <span>Explain with Nano AI</span>
                   </button>
                   <button
                     type="button"
@@ -644,11 +728,28 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
           <div className="lg:col-span-7 muse-card p-5 space-y-4">
             <h2 className="font-display font-bold text-base flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-blue-400" />
-              <span>AI Concept Diagram Generator</span>
+              <span>AI Concept Diagram Generator (Class {profile.classLevel})</span>
             </h2>
             <p className="text-xs text-[var(--text-muted)]">
-              Enter any school topic and Muse AI generates a labeled SVG concept diagram with clickable takeaways.
+              Enter any school topic and Nano AI generates an interactive labeled SVG diagram downloadable as both PNG and SVG. Photorealistic raster Imagen / Flow models require a billing-enabled Gemini API key; interactive vector concept diagrams work immediately.
             </p>
+
+            {/* Quick Class-Specific Prompt Suggestions */}
+            <div className="flex flex-wrap gap-1.5">
+              {classChips.map((chip) => (
+                <button
+                  key={chip.label}
+                  type="button"
+                  onClick={() => {
+                    setDiagramTopic(chip.topic);
+                    setDiagramSubject(chip.subject);
+                  }}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-blue-500/50 text-[var(--text-secondary)]"
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
 
             <form onSubmit={handleGenerateDiagram} className="space-y-3">
               <div>
@@ -706,7 +807,7 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
             <div className="space-y-4">
               {generatedVisuals.length === 0 ? (
                 <div className="muse-panel p-4 text-xs text-[var(--text-muted)]">
-                  Your AI-generated labeled concept diagrams will appear here ready to save into Notes.
+                  Your AI-generated labeled concept diagrams will appear here ready to export as PNG/SVG or save into Notes.
                 </div>
               ) : (
                 generatedVisuals.map((vis) => (
@@ -716,21 +817,37 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
                         <div className="text-[11px] text-[var(--text-muted)]">{vis.subject}</div>
                         <h3 className="font-display font-bold text-base">{vis.title}</h3>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onSaveNote({
-                            id: `note_vis_${Date.now()}`,
-                            subject: vis.subject,
-                            title: vis.title,
-                            content: `${vis.summary}\n\n${vis.keyTakeaways.join('\n')}`,
-                            updatedAt: new Date().toISOString(),
-                          })
-                        }
-                        className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-300 border border-emerald-500/30"
-                      >
-                        Save to Notes
-                      </button>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadGeneratedPng(vis)}
+                          className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:border-blue-500/40 flex items-center gap-1"
+                        >
+                          <Download className="w-3 h-3" /> PNG
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadGeneratedSvg(vis)}
+                          className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:border-blue-500/40 flex items-center gap-1"
+                        >
+                          <Download className="w-3 h-3" /> SVG
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onSaveNote({
+                              id: `note_vis_${Date.now()}`,
+                              subject: vis.subject,
+                              title: vis.title,
+                              content: `${vis.summary}\n\n${vis.keyTakeaways.join('\n')}`,
+                              updatedAt: new Date().toISOString(),
+                            })
+                          }
+                          className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-300 border border-emerald-500/30"
+                        >
+                          Save to Notes
+                        </button>
+                      </div>
                     </div>
                     <div
                       className="rounded-xl overflow-hidden border border-[var(--border-subtle)] bg-slate-950"
@@ -794,21 +911,32 @@ export const ImageAcademyView: React.FC<ImageAcademyViewProps> = ({
                     <div key={doc.id} className="muse-panel p-3.5 space-y-2">
                       <div className="flex items-center justify-between gap-2 text-xs">
                         <span className="font-semibold truncate">{doc.name}</span>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onSaveNote({
-                              id: `note_photo_${Date.now()}`,
-                              subject: diagramSubject,
-                              title: `Photo Notes: ${doc.name}`,
-                              content: doc.summary,
-                              updatedAt: new Date().toISOString(),
-                            })
-                          }
-                          className="text-emerald-400 font-semibold hover:underline shrink-0"
-                        >
-                          Save Note
-                        </button>
+                        <div className="flex items-center gap-2.5 shrink-0">
+                          {onAskDocFollowUp && (
+                            <button
+                              type="button"
+                              onClick={() => onAskDocFollowUp(doc, diagramSubject)}
+                              className="text-blue-400 font-semibold hover:underline"
+                            >
+                              Ask AI Follow-Up
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onSaveNote({
+                                id: `note_photo_${Date.now()}`,
+                                subject: diagramSubject,
+                                title: `Photo Notes: ${doc.name}`,
+                                content: doc.summary,
+                                updatedAt: new Date().toISOString(),
+                              })
+                            }
+                            className="text-emerald-400 font-semibold hover:underline"
+                          >
+                            Save Note
+                          </button>
+                        </div>
                       </div>
                       <p className="text-xs text-[var(--text-secondary)] whitespace-pre-wrap">{doc.summary}</p>
                     </div>

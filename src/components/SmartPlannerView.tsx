@@ -1,26 +1,35 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Bell,
   Calendar,
   CheckCircle2,
   Clock,
+  Download,
   Edit3,
   History,
   Plus,
   Repeat,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
 import { CORE_SUBJECTS } from '../data/curriculumSeed';
 import {
   AssignmentItem,
+  LearningProgress,
+  LessonItem,
+  QuestionItem,
+  QuizAttempt,
   StudyPlanTask,
   TaskPriority,
   TaskRecurrence,
   UserProfile,
 } from '../types/muse';
+import { detectWeakTopics } from '../utils/academicEngine';
 import {
   buildCalendarMonthGrid,
+  buildPlannerIcs,
+  buildSmartTaskSuggestions,
   formatIsoDate,
   getWeekDates,
   sortTasksByPriorityAndTime,
@@ -30,6 +39,12 @@ interface SmartPlannerViewProps {
   profile: UserProfile;
   tasks: StudyPlanTask[];
   assignments: AssignmentItem[];
+  lessons?: LessonItem[];
+  progress?: LearningProgress[];
+  attempts?: QuizAttempt[];
+  questions?: QuestionItem[];
+  initialTaskDraft?: { title: string; subject: string } | null;
+  onConsumeTaskDraft?: () => void;
   onAddTask: (task: StudyPlanTask) => void;
   onUpdateTask: (task: StudyPlanTask) => void;
   onToggleTask: (id: string) => void;
@@ -48,6 +63,12 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
   profile,
   tasks,
   assignments,
+  lessons = [],
+  progress = [],
+  attempts = [],
+  questions = [],
+  initialTaskDraft,
+  onConsumeTaskDraft,
   onAddTask,
   onUpdateTask,
   onToggleTask,
@@ -75,6 +96,38 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
     }
     return 'unsupported';
   });
+
+  useEffect(() => {
+    if (initialTaskDraft) {
+      setTitle(initialTaskDraft.title);
+      setSubject(initialTaskDraft.subject || 'Mathematics');
+      setScheduledDate(todayStr);
+      onConsumeTaskDraft?.();
+    }
+  }, [initialTaskDraft, onConsumeTaskDraft, todayStr]);
+
+  const smartSuggestions = useMemo(() => {
+    const weakTopics = detectWeakTopics(attempts, questions);
+    return buildSmartTaskSuggestions({
+      weakTopics,
+      lessons,
+      progress,
+      assignments,
+      existingTasks: tasks,
+      todayStr,
+    });
+  }, [attempts, questions, lessons, progress, assignments, tasks, todayStr]);
+
+  const handleExportIcs = () => {
+    const ics = buildPlannerIcs(tasks, assignments);
+    const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `muse_study_schedule_${todayStr}.ics`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const resetForm = () => {
     setEditingId(null);
@@ -202,6 +255,14 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleExportIcs}
+            className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-blue-500/40 flex items-center gap-1.5"
+          >
+            <Download className="w-3.5 h-3.5 text-blue-400" />
+            <span>Export .ics</span>
+          </button>
           {[
             { id: 'daily' as const, label: 'Daily' },
             { id: 'weekly' as const, label: 'Weekly' },
@@ -248,6 +309,58 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
           </button>
         )}
       </div>
+
+      {/* Smart Task Suggestions */}
+      {smartSuggestions.length > 0 && (
+        <div className="muse-card p-4 sm:p-5 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-display font-bold text-sm flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-purple-400" />
+              <span>Smart Study Suggestions (From Weak Topics, Lessons &amp; Deadlines)</span>
+            </h2>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {smartSuggestions.map((sug) => (
+              <div key={sug.id} className="muse-panel p-3.5 flex flex-col justify-between gap-2.5">
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-blue-400">{sug.subject}</span>
+                    <span className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold uppercase ${PRIORITY_STYLE[sug.priority]}`}>
+                      {sug.priority}
+                    </span>
+                  </div>
+                  <div className="text-xs font-semibold text-[var(--text-primary)] line-clamp-2">{sug.title}</div>
+                  <div className="text-[11px] text-[var(--text-muted)]">{sug.reason}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const now = new Date().toISOString();
+                    onAddTask({
+                      id: `plan_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+                      uid: profile.uid,
+                      title: sug.title,
+                      subject: sug.subject,
+                      scheduledDate: sug.scheduledDate,
+                      scheduledTime: sug.scheduledTime,
+                      taskType: sug.taskType,
+                      priority: sug.priority,
+                      recurrence: 'none',
+                      completed: false,
+                      reminderEnabled: true,
+                      createdAt: now,
+                      updatedAt: now,
+                    });
+                  }}
+                  className="w-full py-1.5 rounded-lg text-xs font-semibold bg-blue-600/20 text-blue-300 border border-blue-500/40 hover:bg-blue-600/30"
+                >
+                  + Schedule ({sug.scheduledTime})
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Left: Create / Edit Task Form */}

@@ -86,11 +86,11 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl muse-btn-primary flex items-center justify-center font-display font-bold text-lg">
-              M
+              N
             </div>
             <div>
-              <div className="font-display font-bold text-lg leading-tight">Muse AI</div>
-              <div className="text-xs text-[var(--text-muted)]">Think Smarter. Learn Faster. Do More.</div>
+              <div className="font-display font-bold text-lg leading-tight">Nano AI</div>
+              <div className="text-xs text-[var(--text-muted)]">Learn Beyond Limits · Classes 1–12</div>
             </div>
           </div>
 
@@ -98,14 +98,14 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
             <button
               type="button"
               onClick={onToggleTheme}
-              className="px-3 py-2 rounded-lg text-xs font-medium bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-blue-500/50"
+              className="px-3 py-2 rounded-lg text-xs font-medium bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-blue-500/50 whitespace-nowrap shrink-0"
             >
               {theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
             </button>
             <button
               type="button"
               onClick={onLaunchDemo}
-              className="px-4 py-2 rounded-xl text-xs font-semibold bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-blue-500/50"
+              className="px-4 py-2 rounded-xl text-xs font-semibold bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-blue-500/50 whitespace-nowrap shrink-0"
             >
               Try Demo
             </button>
@@ -113,7 +113,7 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
               type="button"
               onClick={onGoogleSignIn}
               disabled={authLoading}
-              className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold muse-btn-primary disabled:opacity-50"
+              className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold muse-btn-primary disabled:opacity-50 whitespace-nowrap shrink-0"
             >
               {authLoading ? 'Signing in...' : 'Continue with Google'}
             </button>
@@ -122,25 +122,34 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
       </header>
 
       <main className="flex-1">
-        <section className="muse-gradient-hero text-white py-12 sm:py-18 px-4 sm:px-6">
-          <div className="max-w-7xl mx-auto grid lg:grid-cols-12 gap-10 items-center">
+        <section className="relative overflow-hidden text-white py-12 sm:py-18 px-4 sm:px-6 bg-slate-950">
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 bg-cover bg-center opacity-45"
+            style={{ backgroundImage: "url('/assets/aistudio/Nano_AI__Learn_Beyond_Limits_354797fe.png')" }}
+          />
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 bg-gradient-to-br from-slate-950/90 via-slate-950/75 to-indigo-950/80"
+          />
+          <div className="relative z-10 max-w-7xl mx-auto grid lg:grid-cols-12 gap-10 items-center">
             <div className="lg:col-span-7 space-y-6">
-              <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-blue-200">
+              <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-cyan-200">
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>AI Assistant · Voice AI · Smart Planner · Learning Studio</span>
+                <span>Nano AI · Learn Beyond Limits · Classes 1–12</span>
               </div>
               <h1 className="font-display text-3xl sm:text-5xl font-extrabold tracking-tight leading-tight">
-                Think Smarter. Learn Faster. Do More.
+                Learn Beyond Limits with Instant Voice &amp; Class-Adaptive Study.
               </h1>
               <p className="text-base sm:text-lg text-slate-200 max-w-2xl leading-relaxed">
-                Muse AI unifies a Gemini-powered AI Assistant with PDF &amp; image analysis, real-time Voice AI, an interactive Smart Planner, 3D XR Learning Studio, and live progress analytics in one calm, focused workspace.
+                Nano AI tailors lessons, Physics/Biology/Chemistry/Maths tracks, instant streaming Voice AI, DIKSHA &amp; PM eVIDYA Guides, 3D concept labs, and daily quizzes directly to your class and board.
               </p>
 
               <div className="flex flex-wrap items-center gap-4 pt-1">
                 <button
                   type="button"
                   onClick={onLaunchDemo}
-                  className="px-6 py-3.5 rounded-xl text-sm font-semibold bg-white text-slate-900 hover:bg-blue-50 flex items-center gap-2 shadow-lg"
+                  className="px-6 py-3.5 rounded-xl text-sm font-semibold bg-white text-slate-900 hover:bg-blue-50 flex items-center gap-2 shadow-lg whitespace-nowrap shrink-0"
                 >
                   <span>Launch Demo Workspace</span>
                   <ArrowRight className="w-4 h-4 text-blue-600" />
@@ -149,7 +158,7 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
                   type="button"
                   onClick={onGoogleSignIn}
                   disabled={authLoading}
-                  className="px-6 py-3.5 rounded-xl text-sm font-semibold bg-blue-600/35 border border-blue-300/40 text-white hover:bg-blue-600/50 flex items-center gap-2 disabled:opacity-60"
+                  className="px-6 py-3.5 rounded-xl text-sm font-semibold bg-blue-600/45 border border-blue-300/40 text-white hover:bg-blue-600/60 flex items-center gap-2 disabled:opacity-60 whitespace-nowrap shrink-0"
                 >
                   <ShieldCheck className="w-4 h-4" />
                   <span>Continue with Google</span>

@@ -8,6 +8,7 @@ import {
   Check,
   Compass,
   Copy,
+  FileText,
   FileUp,
   MessageSquarePlus,
   Mic,
@@ -22,14 +23,20 @@ import {
   ThumbsUp,
   Trash2,
   Volume2,
+  X,
 } from 'lucide-react';
 import { CORE_SUBJECTS, LANGUAGES } from '../data/curriculumSeed';
 import { ChatMessage, ConversationThread, TeachingMode, UploadedDocItem, UserProfile } from '../types/muse';
 import { validateDocumentUpload } from '../utils/plannerUtils';
+import { authFetch } from '../services/firebaseClient';
+import { pickPreferredSpeechVoice } from '../utils/liveVoiceUtils';
 
 interface AITeacherViewProps {
   profile: UserProfile;
   conversations: ConversationThread[];
+  uploadedDocs?: UploadedDocItem[];
+  activeDocId?: string | null;
+  onSelectActiveDoc?: (id: string | null) => void;
   initialSubject?: string;
   initialPrompt?: string | null;
   onConsumeInitialPrompt?: () => void;
@@ -203,6 +210,9 @@ const FormattedAIMessage: React.FC<{ text: string }> = ({ text }) => {
 export const AITeacherView: React.FC<AITeacherViewProps> = ({
   profile,
   conversations,
+  uploadedDocs = [],
+  activeDocId,
+  onSelectActiveDoc,
   initialSubject,
   initialPrompt,
   onConsumeInitialPrompt,
@@ -214,12 +224,15 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
   const [activeThreadId, setActiveThreadId] = useState<string | null>(
     conversations[0]?.id ?? null
   );
+  const [localDocId, setLocalDocId] = useState<string | null>(activeDocId ?? null);
   const [mode, setMode] = useState<TeachingMode>('general_qa');
   const [subject, setSubject] = useState<string>(initialSubject || 'Any Topic / General');
   const [language, setLanguage] = useState<string>(profile.preferredLanguage || 'English');
   const [input, setInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
+  const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
+  const [streamingText, setStreamingText] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -232,6 +245,22 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const handledPromptRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (activeDocId !== undefined) {
+      setLocalDocId(activeDocId);
+    }
+  }, [activeDocId]);
+
+  const effectiveDocId = activeDocId !== undefined ? activeDocId : localDocId;
+  const setEffectiveDocId = (id: string | null) => {
+    setLocalDocId(id);
+    onSelectActiveDoc?.(id);
+  };
+  const attachedDoc = useMemo(
+    () => uploadedDocs.find((d) => d.id === effectiveDocId) ?? null,
+    [uploadedDocs, effectiveDocId]
+  );
 
   useEffect(() => {
     if (initialSubject) {
@@ -289,6 +318,161 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
     setErrorMsg(null);
   };
 
+  const streamAIResponse = async (
+    baseThread: ConversationThread,
+    prompt: string,
+    replaceAiMsgId?: string
+  ) => {
+    const aiMsgId = `msg_${Date.now()}_a`;
+    const initialAiMsg: ChatMessage = {
+      id: aiMsgId,
+      sender: 'ai',
+      text: '',
+      mode,
+      suggestedFollowUps: [],
+      sources: [],
+      feedback: 'none',
+      createdAt: new Date().toISOString(),
+    };
+
+    const documentContext = attachedDoc
+      ? {
+          name: attachedDoc.name,
+          summary: attachedDoc.summary,
+          keyPoints: attachedDoc.keyPoints,
+        }
+      : null;
+
+    const payloadBody = JSON.stringify({
+      question: prompt,
+      mode,
+      board: profile.board,
+      classLevel: profile.classLevel,
+      subject,
+      language,
+      history: baseThread.messages.slice(-8),
+      documentContext,
+    });
+
+    const saveAiState = (msg: ChatMessage) => {
+      const nextMessages = replaceAiMsgId
+        ? baseThread.messages.map((m) => (m.id === replaceAiMsgId ? msg : m))
+        : [...baseThread.messages, msg];
+      onSaveThread({
+        ...baseThread,
+        messages: nextMessages,
+        updatedAt: new Date().toISOString(),
+      });
+    };
+
+    const streamResp = await authFetch('/api/ai/teach/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payloadBody,
+    });
+
+    const contentType = streamResp.headers.get('content-type') || '';
+    if (!streamResp.ok || !contentType.includes('text/event-stream') || !streamResp.body) {
+      if (streamResp.status === 401) {
+        const errData = await streamResp.json().catch(() => ({}));
+        setErrorMsg(errData.error || 'Please sign in with a verified account to ask Muse AI Teacher.');
+        return;
+      }
+      // Fallback to standard JSON endpoint
+      const resp = await authFetch('/api/ai/teach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payloadBody,
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        if (data.errorCode === 'AI_NOT_CONFIGURED') setAiConfigured(false);
+        setErrorMsg(data.error || 'Muse AI could not respond right now.');
+        return;
+      }
+      setAiConfigured(true);
+      const aiMsg: ChatMessage = {
+        ...initialAiMsg,
+        text: data.answer,
+        suggestedFollowUps: data.suggestedFollowUps || [],
+        sources: Array.isArray(data.sources) ? data.sources : [],
+      };
+      saveAiState(aiMsg);
+      if (profile.voiceAutoSpeak) speakText(aiMsg.id, aiMsg.text);
+      return;
+    }
+
+    setAiConfigured(true);
+    setStreamingMsgId(aiMsgId);
+    setStreamingText('');
+    const reader = streamResp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulated = '';
+    let finalFollowUps: string[] = [];
+    let finalSources: string[] = [];
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() || '';
+        for (const evt of events) {
+          const line = evt
+            .split(/\r?\n/)
+            .find((l) => l.startsWith('data:'));
+          if (!line) continue;
+          try {
+            const parsed = JSON.parse(line.slice(5).trim()) as {
+              delta?: string;
+              done?: boolean;
+              answer?: string;
+              suggestedFollowUps?: string[];
+              sources?: string[];
+              error?: string;
+            };
+            if (parsed.error) {
+              setErrorMsg(parsed.error);
+              return;
+            }
+            if (parsed.delta) {
+              accumulated += parsed.delta;
+              setStreamingText(accumulated);
+            }
+            if (parsed.done) {
+              if (parsed.answer) {
+                accumulated = parsed.answer;
+                setStreamingText(accumulated);
+              }
+              finalFollowUps = parsed.suggestedFollowUps || [];
+              finalSources = Array.isArray(parsed.sources) ? parsed.sources : [];
+            }
+          } catch {
+            // Ignore malformed SSE partial frame
+          }
+        }
+      }
+    } finally {
+      setStreamingMsgId(null);
+      setStreamingText('');
+    }
+
+    if (accumulated.trim()) {
+      const completedMsg: ChatMessage = {
+        ...initialAiMsg,
+        text: accumulated,
+        suggestedFollowUps: finalFollowUps,
+        sources: finalSources,
+      };
+      saveAiState(completedMsg);
+      if (profile.voiceAutoSpeak) {
+        speakText(completedMsg.id, completedMsg.text);
+      }
+    }
+  };
+
   const sendMessage = async (questionText?: string) => {
     const prompt = (questionText ?? input).trim();
     if (!prompt || loading) return;
@@ -331,52 +515,32 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
     setActiveThreadId(updatedWithStudent.id);
 
     try {
-      const resp = await fetch('/api/ai/teach', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: prompt,
-          mode,
-          board: profile.board,
-          classLevel: profile.classLevel,
-          subject,
-          language,
-          history: updatedWithStudent.messages.slice(-8),
-        }),
-      });
-
-      const data = await resp.json();
-      if (!resp.ok) {
-        if (data.errorCode === 'AI_NOT_CONFIGURED') {
-          setAiConfigured(false);
-        }
-        setErrorMsg(data.error || 'Muse AI could not respond right now.');
-        return;
-      }
-
-      setAiConfigured(true);
-      const aiMsg: ChatMessage = {
-        id: `msg_${Date.now()}_a`,
-        sender: 'ai',
-        text: data.answer,
-        mode,
-        suggestedFollowUps: data.suggestedFollowUps || [],
-        sources: Array.isArray(data.sources) ? data.sources : [],
-        feedback: 'none',
-        createdAt: new Date().toISOString(),
-      };
-
-      onSaveThread({
-        ...updatedWithStudent,
-        messages: [...updatedWithStudent.messages, aiMsg],
-        updatedAt: new Date().toISOString(),
-      });
-
-      if (profile.voiceAutoSpeak) {
-        speakText(aiMsg.id, aiMsg.text);
-      }
+      await streamAIResponse(updatedWithStudent, prompt);
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Network error reaching Muse AI.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegenerate = async (aiMsgId: string) => {
+    if (!activeThread || loading) return;
+    const idx = activeThread.messages.findIndex((m) => m.id === aiMsgId);
+    if (idx <= 0) return;
+    let promptMsg: ChatMessage | null = null;
+    for (let i = idx - 1; i >= 0; i -= 1) {
+      if (activeThread.messages[i].sender === 'student') {
+        promptMsg = activeThread.messages[i];
+        break;
+      }
+    }
+    if (!promptMsg) return;
+    setErrorMsg(null);
+    setLoading(true);
+    try {
+      await streamAIResponse(activeThread, promptMsg.text, aiMsgId);
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not regenerate response.');
     } finally {
       setLoading(false);
     }
@@ -388,7 +552,7 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
       onConsumeInitialPrompt?.();
       sendMessage(initialPrompt);
     }
-  });
+  }, [initialPrompt, onConsumeInitialPrompt]);
 
   const speakText = (msgId: string, text: string) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
@@ -402,6 +566,9 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
     }
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text.replace(/[*`#]/g, ''));
+    const chosenVoice = pickPreferredSpeechVoice(window.speechSynthesis.getVoices(), language);
+    if (chosenVoice) utterance.voice = chosenVoice;
+    utterance.lang = chosenVoice?.lang || 'en-IN';
     utterance.rate = Math.min(2, Math.max(0.5, Number(profile.speechRate ?? 1.0)));
     utterance.pitch = Math.min(2, Math.max(0.5, Number(profile.speechPitch ?? 1.0)));
     utterance.onend = () => setSpeakingId(null);
@@ -472,7 +639,8 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
       updatedAt: now,
     };
 
-    const userPrompt = input.trim() || `Summarize and extract key study notes from ${file.name}`;
+    const rawInput = input.trim();
+    const userPrompt = rawInput || `Summarize and extract key study notes from ${file.name}`;
     setInput('');
     const studentMsg: ChatMessage = {
       id: `msg_${Date.now()}_u`,
@@ -505,14 +673,14 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
         reader.readAsDataURL(file);
       });
 
-      const resp = await fetch('/api/ai/analyze-document', {
+      const resp = await authFetch('/api/ai/analyze-document', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fileName: file.name,
           mimeType: file.type || 'text/plain',
           base64Data,
-          action: input.trim() ? 'qa' : 'notes',
+          action: rawInput ? 'qa' : 'notes',
           question: userPrompt,
           language,
         }),
@@ -523,14 +691,16 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
         return;
       }
 
-      onSaveUploadedDoc?.({
+      const savedDoc: UploadedDocItem = {
         id: `doc_${Date.now()}`,
         name: file.name,
         mimeType: file.type || 'text/plain',
         summary: data.summary,
         keyPoints: data.keyPoints || [],
         createdAt: new Date().toISOString(),
-      });
+      };
+      onSaveUploadedDoc?.(savedDoc);
+      setEffectiveDocId(savedDoc.id);
 
       const bullets = Array.isArray(data.keyPoints) && data.keyPoints.length > 0
         ? `\n\n### Key Takeaways\n${data.keyPoints.map((k: string) => `- ${k}`).join('\n')}`
@@ -919,6 +1089,17 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
 
                           <button
                             type="button"
+                            onClick={() => handleRegenerate(msg.id)}
+                            disabled={loading}
+                            aria-label="Regenerate response"
+                            className="text-xs px-2.5 py-1 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center gap-1 hover:border-blue-500/40 disabled:opacity-40"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Regenerate</span>
+                          </button>
+
+                          <button
+                            type="button"
                             aria-label="Mark answer helpful"
                             onClick={() => handleFeedback(msg.id, 'helpful')}
                             className={`text-xs p-1.5 rounded-lg border ${
@@ -962,13 +1143,24 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
               ))
             )}
 
-            {loading && (
+            {loading && streamingMsgId && streamingText && (
+              <div className="flex gap-3 justify-start">
+                <div className="w-8 h-8 rounded-full muse-btn-primary flex items-center justify-center shrink-0 mt-0.5">
+                  <Bot className="w-4 h-4 animate-pulse" />
+                </div>
+                <div className="min-w-0 flex-1 muse-panel rounded-2xl rounded-tl-sm px-4 py-3.5">
+                  <FormattedAIMessage text={streamingText} />
+                </div>
+              </div>
+            )}
+
+            {loading && (!streamingMsgId || !streamingText) && (
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-full muse-btn-primary flex items-center justify-center shrink-0">
                   <Bot className="w-4 h-4 animate-pulse" />
                 </div>
                 <div className="muse-panel px-4 py-3 rounded-2xl text-sm text-[var(--text-muted)]">
-                  Muse AI is thinking...
+                  Nano AI is thinking...
                 </div>
               </div>
             )}
@@ -1040,7 +1232,51 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
                     </option>
                   ))}
                 </select>
+
+                {uploadedDocs.length > 0 && (
+                  <div className="flex items-center gap-1.5 ml-auto">
+                    <FileText className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                    <select
+                      aria-label="Attached document context"
+                      value={effectiveDocId || ''}
+                      onChange={(e) => setEffectiveDocId(e.target.value || null)}
+                      className="px-2 py-1 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs max-w-[190px]"
+                    >
+                      <option value="">No Document Attached</option>
+                      {uploadedDocs.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          Doc: {d.name}
+                        </option>
+                      ))}
+                    </select>
+                    {attachedDoc && (
+                      <button
+                        type="button"
+                        aria-label="Detach document context"
+                        onClick={() => setEffectiveDocId(null)}
+                        className="p-1 rounded-lg text-[var(--text-muted)] hover:text-rose-400"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
+
+              {attachedDoc && (
+                <div className="px-2.5 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/30 text-[11px] text-purple-200 flex items-center justify-between gap-2">
+                  <span className="truncate">
+                    Follow-ups grounded in <strong>{attachedDoc.name}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setEffectiveDocId(null)}
+                    className="text-purple-300 hover:underline shrink-0"
+                  >
+                    Detach
+                  </button>
+                </div>
+              )}
 
               {/* Multi-line ChatGPT Prompt Box + Upload + Voice + Upward Arrow Send */}
               <div className="flex items-end gap-2">
@@ -1081,7 +1317,7 @@ export const AITeacherView: React.FC<AITeacherViewProps> = ({
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleComposerKeyDown}
-                  placeholder={`Message Muse AI or upload a PDF/Image (${subject}, ${language})...`}
+                  placeholder={`Message Nano AI or upload a PDF/Image (${subject}, ${language})...`}
                   aria-label="Ask AI Teacher"
                   maxLength={4000}
                   className="flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none max-h-36"

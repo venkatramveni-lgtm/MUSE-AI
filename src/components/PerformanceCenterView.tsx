@@ -1,15 +1,55 @@
 import React from 'react';
 import { Award, BarChart3, CheckCircle2, Download, Flame, TrendingUp } from 'lucide-react';
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { MuseWorkspaceState } from '../services/workspaceStore';
 import {
+  buildQuizTrendChartData,
   computeSubjectProgress,
   detectWeakTopics,
   evaluateAchievements,
+  QuizTrendPoint,
 } from '../utils/academicEngine';
 
 interface PerformanceCenterViewProps {
   workspace: MuseWorkspaceState;
 }
+
+const QuizTrendTooltip: React.FC<{
+  active?: boolean;
+  payload?: Array<{ payload: QuizTrendPoint }>;
+}> = ({ active, payload }) => {
+  if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0].payload;
+  return (
+    <div className="rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] shadow-xl p-3 text-xs space-y-1 min-w-[180px]">
+      <div className="font-display font-bold text-[var(--text-primary)] truncate max-w-[220px]">
+        {point.title}
+      </div>
+      <div className="text-[11px] text-[var(--text-muted)]">
+        {point.subject} · {point.shortDate}
+      </div>
+      <div className="pt-1 border-t border-[var(--border-subtle)] flex items-center justify-between gap-3 tabular-nums">
+        <span className="text-[var(--text-secondary)]">Score</span>
+        <span className="font-bold text-blue-400">
+          {point.percentage}% ({point.score}/{point.total})
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-3 tabular-nums">
+        <span className="text-[var(--text-secondary)]">Running Avg</span>
+        <span className="font-semibold text-emerald-400">{point.cumulativeAvg}%</span>
+      </div>
+    </div>
+  );
+};
 
 export const PerformanceCenterView: React.FC<PerformanceCenterViewProps> = ({
   workspace,
@@ -37,6 +77,14 @@ export const PerformanceCenterView: React.FC<PerformanceCenterViewProps> = ({
         )
       : null;
 
+  const trendData = React.useMemo(
+    () => buildQuizTrendChartData(workspace.attempts, 16),
+    [workspace.attempts]
+  );
+  const latestScore = trendData.length > 0 ? trendData[trendData.length - 1].percentage : null;
+  const bestScore =
+    trendData.length > 0 ? Math.max(...trendData.map((d) => d.percentage)) : null;
+
   // Weekly productivity activity counts from real saved data (last 7 days)
   const weeklyActivity = React.useMemo(() => {
     const days: { label: string; count: number }[] = [];
@@ -63,7 +111,7 @@ export const PerformanceCenterView: React.FC<PerformanceCenterViewProps> = ({
 
   const downloadReport = () => {
     const report = [
-      `MUSE AI PROGRESS REPORT`,
+      `NANO AI PROGRESS REPORT`,
       `Learner: ${profile.displayName} (${profile.board} · Class ${profile.classLevel})`,
       `Generated: ${new Date().toLocaleString()}`,
       `Completed Lessons: ${completedLessonsCount} / ${workspace.lessons.length}`,
@@ -88,7 +136,7 @@ export const PerformanceCenterView: React.FC<PerformanceCenterViewProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `muse_ai_progress_report_${profile.uid}.txt`;
+    a.download = `nano_ai_progress_report_${profile.uid}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -181,54 +229,92 @@ export const PerformanceCenterView: React.FC<PerformanceCenterViewProps> = ({
         </div>
 
         <div className="lg:col-span-6 min-w-0 muse-card p-5 space-y-4">
-          <div className="flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-blue-400" />
-            <h2 className="font-display font-bold text-base">Assessment Score Trend</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-blue-400" />
+              <h2 className="font-display font-bold text-base">Assessment Score Trend</h2>
+            </div>
+            {trendData.length > 0 && (
+              <div className="flex items-center gap-3 text-[11px] tabular-nums">
+                <span className="text-blue-400 font-semibold">Latest: {latestScore}%</span>
+                <span className="text-emerald-400 font-semibold">Best: {bestScore}%</span>
+              </div>
+            )}
           </div>
 
-          {workspace.attempts.length === 0 ? (
+          {trendData.length === 0 ? (
             <div className="muse-panel p-6 text-center text-xs text-[var(--text-muted)]">
-              Complete a Daily Quiz, Weekly Test, or Practice Set in Learning Studio to visualize your score trend.
+              Complete a Daily Quiz, Weekly Test, or Practice Set in Assessments to visualize your interactive score trend over time.
             </div>
           ) : (
-            <svg viewBox="0 0 460 180" className="w-full" role="img" aria-label="Assessment score trend chart">
-              <rect
-                x="0"
-                y="0"
-                width="460"
-                height="180"
-                rx="12"
-                fill="var(--bg-elevated)"
-                stroke="var(--border-subtle)"
-              />
-              {[25, 50, 75, 100].map((tick) => {
-                const y = 150 - tick * 1.2;
-                return (
-                  <g key={tick}>
-                    <line x1="40" y1={y} x2="440" y2={y} stroke="var(--border-subtle)" strokeDasharray="3 3" />
-                    <text x="8" y={y + 4} fill="var(--text-muted)" fontSize="10">{tick}%</text>
-                  </g>
-                );
-              })}
-              {workspace.attempts.slice(-8).map((att, idx, arr) => {
-                const barWidth = 34;
-                const gap = (390 - arr.length * barWidth) / Math.max(1, arr.length + 1);
-                const x = 40 + gap + idx * (barWidth + gap);
-                const h = Math.max(6, att.percentage * 1.2);
-                const y = 150 - h;
-                return (
-                  <g key={att.id}>
-                    <rect x={x} y={y} width={barWidth} height={h} rx="6" fill="var(--accent-blue)" />
-                    <text x={x + barWidth / 2} y={y - 5} textAnchor="middle" fill="var(--text-primary)" fontSize="10" fontWeight="600">
-                      {att.percentage}%
-                    </text>
-                    <text x={x + barWidth / 2} y="168" textAnchor="middle" fill="var(--text-muted)" fontSize="9">
-                      #{idx + 1}
-                    </text>
-                  </g>
-                );
-              })}
-            </svg>
+            <div className="space-y-2.5">
+              <div
+                data-testid="performance-trend-chart"
+                aria-label="Assessment score trend chart"
+                className="w-full h-[220px] min-w-0 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] p-2"
+              >
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={trendData} margin={{ top: 12, right: 18, left: -12, bottom: 4 }}>
+                    <defs>
+                      <linearGradient id="museQuizScoreGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.35} />
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.18)" vertical={false} />
+                    <XAxis
+                      dataKey="label"
+                      padding={{ left: 16, right: 16 }}
+                      tick={{ fill: 'var(--text-muted)', fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      minTickGap={16}
+                    />
+                    <YAxis
+                      domain={[0, 100]}
+                      ticks={[0, 25, 50, 75, 100]}
+                      tickFormatter={(v) => `${v}%`}
+                      tick={{ fill: 'var(--text-muted)', fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip content={<QuizTrendTooltip />} />
+                    <Area
+                      type="monotone"
+                      dataKey="percentage"
+                      name="Quiz Score"
+                      stroke="#3b82f6"
+                      strokeWidth={2.5}
+                      fill="url(#museQuizScoreGrad)"
+                      dot={{ r: 4, fill: '#3b82f6', stroke: '#0f172a', strokeWidth: 1.5 }}
+                      activeDot={{ r: 6, fill: '#60a5fa', stroke: '#ffffff', strokeWidth: 2 }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="cumulativeAvg"
+                      name="Running Avg"
+                      stroke="#10b981"
+                      strokeWidth={1.75}
+                      strokeDasharray="4 4"
+                      dot={false}
+                    />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--text-muted)]">
+                <div className="flex items-center gap-4">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block" />
+                    <span>Quiz Score (%)</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-3 border-t-2 border-dashed border-emerald-400 inline-block" />
+                    <span>Running Average (%)</span>
+                  </span>
+                </div>
+                <span className="tabular-nums">Showing {trendData.length} attempt{trendData.length === 1 ? '' : 's'}</span>
+              </div>
+            </div>
           )}
         </div>
       </div>

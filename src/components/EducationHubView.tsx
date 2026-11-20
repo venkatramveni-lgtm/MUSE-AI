@@ -34,6 +34,7 @@ import {
   type LanguageDefinition,
   type SubjectDescriptor,
 } from '../data/educationRegistry';
+import { auth, authFetch } from '../services/firebaseClient';
 import type {
   ApprovedChannelEntry,
   EducationPlaylistItem,
@@ -175,6 +176,7 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
   const [noteSavedToast, setNoteSavedToast] = useState<boolean>(false);
 
   const [quizLoading, setQuizLoading] = useState<boolean>(false);
+  const [quizSessionId, setQuizSessionId] = useState<string | null>(null);
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>({});
   const [quizResult, setQuizResult] = useState<QuizGradeResult | null>(null);
@@ -183,15 +185,20 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
   // Hydrate dynamic board & language lists once
   useEffect(() => {
     let active = true;
+    const isAuthed = Boolean(auth.currentUser);
     Promise.all([
       fetch('/api/education/boards').then((r) => (r.ok ? r.json() : null)).catch(() => null),
       fetch('/api/education/languages').then((r) => (r.ok ? r.json() : null)).catch(() => null),
-      fetch(`/api/education/bookmarks?uid=${encodeURIComponent(profile.uid)}`)
-        .then((r) => (r.ok ? r.json() : null))
-        .catch(() => null),
-      fetch(`/api/education/watch-history?uid=${encodeURIComponent(profile.uid)}`)
-        .then((r) => (r.ok ? r.json() : null))
-        .catch(() => null),
+      isAuthed
+        ? authFetch('/api/education/bookmarks')
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null)
+        : Promise.resolve(null),
+      isAuthed
+        ? authFetch('/api/education/watch-history')
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null)
+        : Promise.resolve(null),
     ]).then(([bData, lData, bmData, whData]) => {
       if (!active) return;
       if (bData?.boards && Array.isArray(bData.boards)) setBoards(bData.boards);
@@ -310,6 +317,8 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
 
         if (!resp.ok && data.error) {
           setVideoError(data.error);
+        } else if (data.configured !== false && data.warning) {
+          setVideoError(data.warning);
         }
       } catch (err: unknown) {
         setVideoError(err instanceof Error ? err.message : 'Unable to reach Education Hub server.');
@@ -373,11 +382,20 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
   );
 
   const handleToggleBookmark = async (video: EducationVideoItem) => {
+    if (!auth.currentUser) {
+      const exists = bookmarks.some((v) => v.videoId === video.videoId);
+      setBookmarks((prev) =>
+        exists ? prev.filter((v) => v.videoId !== video.videoId) : [video, ...prev]
+      );
+      setStatusToast(exists ? 'Removed from Bookmarks' : 'Saved to Bookmarks');
+      setTimeout(() => setStatusToast(null), 2200);
+      return;
+    }
     try {
-      const resp = await fetch('/api/education/bookmarks', {
+      const resp = await authFetch('/api/education/bookmarks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: profile.uid, video }),
+        body: JSON.stringify({ video }),
       });
       if (!resp.ok) return;
       const data = await resp.json();
@@ -394,16 +412,18 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
     setStudyWorkspaceOpen(true);
     setTutorResponse(null);
     setTutorError(null);
+    setQuizSessionId(null);
     setQuizQuestions([]);
     setQuizResult(null);
     setReportOpen(false);
     setReportFeedback(null);
 
+    if (!auth.currentUser) return;
     try {
-      const resp = await fetch('/api/education/watch-progress', {
+      const resp = await authFetch('/api/education/watch-progress', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: profile.uid, video, progressPercent: 25 }),
+        body: JSON.stringify({ video, progressPercent: 25 }),
       });
       if (resp.ok) {
         const data = await resp.json();
@@ -415,11 +435,16 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
   };
 
   const handleMarkWatched = async (video: EducationVideoItem) => {
+    if (!auth.currentUser) {
+      setStatusToast('Sign in with a verified account to sync Watch History across devices.');
+      setTimeout(() => setStatusToast(null), 2400);
+      return;
+    }
     try {
-      const resp = await fetch('/api/education/watch-progress', {
+      const resp = await authFetch('/api/education/watch-progress', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: profile.uid, video, progressPercent: 100 }),
+        body: JSON.stringify({ video, progressPercent: 100 }),
       });
       if (resp.ok) {
         const data = await resp.json();
@@ -444,19 +469,21 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
     e.preventDefault();
     if (!selectedVideo) return;
     try {
-      const resp = await fetch('/api/education/report', {
+      const resp = await authFetch('/api/education/report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           videoId: selectedVideo.videoId,
           videoTitle: selectedVideo.title,
           reason: reportReason.trim() || 'Inappropriate or off-syllabus content',
-          reportedByUid: profile.uid,
         }),
       });
       if (resp.ok) {
         setReportFeedback('Report submitted to Admin Moderation Queue. Thank you for keeping Muse safe.');
         setReportOpen(false);
+      } else {
+        const data = await resp.json().catch(() => ({}));
+        setReportFeedback(data.error || 'Please sign in to submit content reports.');
       }
     } catch {
       setReportFeedback('Could not submit report right now.');
@@ -470,7 +497,7 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
     setTutorError(null);
 
     try {
-      const resp = await fetch('/api/education/ai-explain', {
+      const resp = await authFetch('/api/education/ai-explain', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -514,6 +541,7 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
     setQuizLoading(true);
     setQuizError(null);
     setQuizResult(null);
+    setQuizSessionId(null);
     setQuizAnswers({});
 
     try {
@@ -522,7 +550,7 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
         selectedChapter ||
         activeQuery ||
         `${selectedSubject} Class ${selectedClass}`;
-      const resp = await fetch('/api/education/quiz-generate', {
+      const resp = await authFetch('/api/education/quiz-generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -538,6 +566,7 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
         setQuizError(data.error || 'Could not generate practice quiz.');
         return;
       }
+      setQuizSessionId(typeof data.quizSessionId === 'string' ? data.quizSessionId : null);
       setQuizQuestions(Array.isArray(data.questions) ? data.questions : []);
     } catch (err: unknown) {
       setQuizError(err instanceof Error ? err.message : 'Network error generating quiz.');
@@ -547,18 +576,22 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
   };
 
   const handleSubmitQuiz = async () => {
-    if (quizQuestions.length === 0) return;
+    if (quizQuestions.length === 0 || !quizSessionId) return;
     try {
-      const resp = await fetch('/api/education/quiz-submit', {
+      const resp = await authFetch('/api/education/quiz-submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          questions: quizQuestions,
+          quizSessionId,
           answers: quizAnswers,
         }),
       });
       const data = await resp.json();
-      if (resp.ok) setQuizResult(data);
+      if (resp.ok) {
+        setQuizResult(data);
+      } else {
+        setQuizError(data.error || 'Failed to submit quiz answers.');
+      }
     } catch {
       setQuizError('Failed to submit quiz answers.');
     }
@@ -922,7 +955,7 @@ export const EducationHubView: React.FC<EducationHubViewProps> = ({
                     <iframe
                       title={selectedVideo.title}
                       src={`https://www.youtube-nocookie.com/embed/${selectedVideo.videoId}?rel=0&cc_load_policy=1&enablejsapi=1`}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                       allowFullScreen
                       className="w-full h-full border-0"
                     />

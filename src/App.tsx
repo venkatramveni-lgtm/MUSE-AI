@@ -1,22 +1,27 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Component, ErrorInfo, lazy, ReactNode, Suspense, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Award,
   BarChart3,
   Bell,
   BookOpen,
   Bot,
+  Box,
   Calendar,
   ClipboardCheck,
   Compass,
   FileText,
+  Globe,
   GraduationCap,
   Home,
   Image as ImageIcon,
   Layers,
   LogOut,
+  Mail,
   Menu,
   Mic,
   Moon,
+  RefreshCw,
   Search,
   Shield,
   Sparkles,
@@ -31,13 +36,13 @@ import {
 import {
   AppModuleId,
   AssessmentMode,
-  AssignmentItem,
   AssignmentSubmission,
   ConversationThread,
   GeneratedVisualDiagram,
   LessonItem,
-  QuestionItem,
+  NotificationItem,
   QuizAttempt,
+  SavedGuideLink,
   SavedNote,
   StudyPlanTask,
   ThemeMode,
@@ -65,20 +70,35 @@ import {
   signOutFirebase,
   signUpWithEmail,
   testFirestoreConnection,
+  type User as FirebaseUser,
 } from './services/firebaseClient';
 import {
+  deleteConversationFromFirestore,
+  deleteSavedNoteFromFirestore,
+  deleteStudyPlanFromFirestore,
   deleteUserAccountFromFirestore,
+  fetchConversationsFromFirestore,
+  fetchNotificationsFromFirestore,
+  fetchQuizAttemptsFromFirestore,
+  fetchSavedNotesFromFirestore,
+  fetchStudyPlansFromFirestore,
+  fetchSubmissionsFromFirestore,
   fetchUserProfile,
   fetchUserProgress,
+  markNotificationsReadInFirestore,
   saveConversationMessageToFirestore,
+  saveNotificationToFirestore,
   saveQuizAttemptToFirestore,
+  saveSavedNoteToFirestore,
   saveStudyPlanToFirestore,
+  saveSubmissionToFirestore,
   saveUserProfileToFirestore,
   upsertLearningProgress,
   writeAuditLogToFirestore,
 } from './services/firestoreRepo';
 import { BOARDS, CLASS_LEVELS, CORE_SUBJECTS, LANGUAGES } from './data/curriculumSeed';
 import {
+  clearAllOfflineUserSnapshots,
   clearOfflineCacheForUser,
   getOfflineCacheStatus,
   initServiceWorkerRegistration,
@@ -89,40 +109,138 @@ import {
 } from './services/offlineCacheService';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { LessonCollectionFilter, mergeOfflineProgressAndNotes } from './utils/offlineCache';
-import { buildNextRecurringTask, buildUserDataExportPayload } from './utils/plannerUtils';
+import { buildNextRecurringTask, buildUserDataExportPayload, getDueReminderTasks } from './utils/plannerUtils';
+import { getClassSpecificStudyPlanSeeds } from './utils/curriculumFilter';
 import { ConnectivityPill, OfflineIndicator, PWAInstallButton } from './components/PWAStatusBar';
 import { GuidedArrowsOverlay } from './components/GuidedArrowsOverlay';
 import { LandingAuthView } from './components/LandingAuthView';
 import { OnboardingModal } from './components/OnboardingModal';
-import { StudentDashboard } from './components/StudentDashboard';
-import { AITeacherView } from './components/AITeacherView';
-import { VoiceAIView } from './components/VoiceAIView';
-import { EducationHubView } from './components/EducationHubView';
-import { SmartPlannerView } from './components/SmartPlannerView';
-import { LearningStudioView, StudioTabId } from './components/LearningStudioView';
-import { LessonAcademyView } from './components/LessonAcademyView';
-import { VideoAcademyView } from './components/VideoAcademyView';
-import { ImageAcademyView } from './components/ImageAcademyView';
-import { AssessmentCenterView } from './components/AssessmentCenterView';
-import { PerformanceCenterView } from './components/PerformanceCenterView';
-import {
-  AchievementsView,
-  AssignmentCenterView,
-  ProfileSettingsView,
-  RevisionCenterView,
-} from './components/LearningToolsViews';
-import {
-  AdminPanelView,
-  ParentPortalView,
-  TeacherPortalView,
-} from './components/RolePortalsView';
+import type { StudioTabId } from './components/LearningStudioView';
+
+const StudentDashboard = lazy(() =>
+  import('./components/StudentDashboard').then((m) => ({ default: m.StudentDashboard }))
+);
+const AITeacherView = lazy(() =>
+  import('./components/AITeacherView').then((m) => ({ default: m.AITeacherView }))
+);
+const VoiceAIView = lazy(() =>
+  import('./components/VoiceAIView').then((m) => ({ default: m.VoiceAIView }))
+);
+const EducationHubView = lazy(() =>
+  import('./components/EducationHubView').then((m) => ({ default: m.EducationHubView }))
+);
+const SmartPlannerView = lazy(() =>
+  import('./components/SmartPlannerView').then((m) => ({ default: m.SmartPlannerView }))
+);
+const LearningStudioView = lazy(() =>
+  import('./components/LearningStudioView').then((m) => ({ default: m.LearningStudioView }))
+);
+const LessonAcademyView = lazy(() =>
+  import('./components/LessonAcademyView').then((m) => ({ default: m.LessonAcademyView }))
+);
+const VideoAcademyView = lazy(() =>
+  import('./components/VideoAcademyView').then((m) => ({ default: m.VideoAcademyView }))
+);
+const ImageAcademyView = lazy(() =>
+  import('./components/ImageAcademyView').then((m) => ({ default: m.ImageAcademyView }))
+);
+const AssessmentCenterView = lazy(() =>
+  import('./components/AssessmentCenterView').then((m) => ({ default: m.AssessmentCenterView }))
+);
+const PerformanceCenterView = lazy(() =>
+  import('./components/PerformanceCenterView').then((m) => ({ default: m.PerformanceCenterView }))
+);
+const AchievementsView = lazy(() =>
+  import('./components/LearningToolsViews').then((m) => ({ default: m.AchievementsView }))
+);
+const AssignmentCenterView = lazy(() =>
+  import('./components/LearningToolsViews').then((m) => ({ default: m.AssignmentCenterView }))
+);
+const ProfileSettingsView = lazy(() =>
+  import('./components/LearningToolsViews').then((m) => ({ default: m.ProfileSettingsView }))
+);
+const RevisionCenterView = lazy(() =>
+  import('./components/LearningToolsViews').then((m) => ({ default: m.RevisionCenterView }))
+);
+const AdminPanelView = lazy(() =>
+  import('./components/RolePortalsView').then((m) => ({ default: m.AdminPanelView }))
+);
+const ParentPortalView = lazy(() =>
+  import('./components/RolePortalsView').then((m) => ({ default: m.ParentPortalView }))
+);
+const GuidesView = lazy(() =>
+  import('./components/GuidesView').then((m) => ({ default: m.GuidesView }))
+);
+const Viewer3DView = lazy(() =>
+  import('./components/Viewer3DView').then((m) => ({ default: m.Viewer3DView }))
+);
+
+class ModuleErrorBoundary extends Component<
+  { resetKey: string; children: ReactNode },
+  { hasError: boolean; errorMessage: string }
+> {
+  constructor(props: { resetKey: string; children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorMessage: '' };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, errorMessage: error?.message || 'Unable to load this module.' };
+  }
+
+  componentDidUpdate(prevProps: { resetKey: string }) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false, errorMessage: '' });
+    }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Module render error:', error, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div role="alert" className="muse-card p-6 space-y-3 border border-rose-500/40">
+          <div className="flex items-center gap-2 text-rose-400 font-display font-bold text-base">
+            <AlertTriangle className="w-5 h-5" />
+            <span>Something went wrong loading this section</span>
+          </div>
+          <p className="text-xs text-[var(--text-muted)]">{this.state.errorMessage}</p>
+          <button
+            type="button"
+            onClick={() => this.setState({ hasError: false, errorMessage: '' })}
+            className="px-4 py-2 rounded-xl text-xs font-semibold muse-btn-primary"
+          >
+            Try Again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const ModuleLoadingFallback: React.FC = () => (
+  <div className="muse-card p-8 flex items-center justify-center gap-3 text-xs text-[var(--text-muted)]">
+    <RefreshCw className="w-4 h-4 animate-spin text-blue-400" />
+    <span>Loading workspace module...</span>
+  </div>
+);
+
+function mergeItemsById<T extends { id: string }>(cached: T[], remote: T[]): T[] {
+  const map = new Map<string, T>();
+  for (const item of cached) map.set(item.id, item);
+  for (const item of remote) map.set(item.id, item);
+  return Array.from(map.values());
+}
 
 interface NavItem {
   id: AppModuleId;
   label: string;
   shortLabel?: string;
   icon: React.ComponentType<{ className?: string }>;
-  group: 'primary' | 'academies' | 'portals';
+  group: 'primary' | 'guides' | 'academies' | 'portals';
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -134,9 +252,11 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'learning_studio', label: 'Learning Studio', shortLabel: 'Studio', icon: Sparkles, group: 'primary' },
   { id: 'performance_centre', label: 'Progress', shortLabel: 'Progress', icon: BarChart3, group: 'primary' },
   { id: 'profile', label: 'Profile', shortLabel: 'Profile', icon: User, group: 'primary' },
+  { id: 'guides', label: 'All Guides & DIKSHA', shortLabel: 'Guides', icon: Globe, group: 'guides' },
   { id: 'lesson_academy', label: 'Learning Academy', icon: BookOpen, group: 'academies' },
   { id: 'video_academy', label: 'Video Academy', icon: Video, group: 'academies' },
   { id: 'image_academy', label: 'Image Academy', icon: ImageIcon, group: 'academies' },
+  { id: 'viewer_3d', label: '3D Viewer', icon: Box, group: 'academies' },
   { id: 'daily_quiz', label: 'Daily Quiz', icon: ClipboardCheck, group: 'academies' },
   { id: 'weekly_tests', label: 'Weekly Tests', icon: Award, group: 'academies' },
   { id: 'practice_centre', label: 'Practice Centre', icon: Target, group: 'academies' },
@@ -144,7 +264,6 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'revision_centre', label: 'Revision Centre', icon: Layers, group: 'academies' },
   { id: 'achievements', label: 'Achievements', icon: Trophy, group: 'academies' },
   { id: 'parent_portal', label: 'Parent Portal', icon: Users, group: 'portals' },
-  { id: 'teacher_portal', label: 'Teacher Portal', icon: Sparkles, group: 'portals' },
   { id: 'admin_panel', label: 'Admin Panel', icon: Shield, group: 'portals' },
 ];
 
@@ -171,6 +290,12 @@ export const App: React.FC = () => {
     useState<LessonCollectionFilter>('all');
   const [aiContextSubject, setAiContextSubject] = useState<string | undefined>(undefined);
   const [aiInitialPrompt, setAiInitialPrompt] = useState<string | null>(null);
+  const [aiActiveDocId, setAiActiveDocId] = useState<string | null>(null);
+  const [plannerTaskDraft, setPlannerTaskDraft] = useState<{ title: string; subject: string } | null>(null);
+  const [videoInitialSubject, setVideoInitialSubject] = useState<string>('ALL');
+  const [videoInitialSearch, setVideoInitialSearch] = useState<string>('');
+  const [reminderToast, setReminderToast] = useState<{ id: string; title: string; message: string } | null>(null);
+  const triggeredReminderIdsRef = React.useRef<Set<string>>(new Set());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
@@ -183,7 +308,12 @@ export const App: React.FC = () => {
   const [swReady, setSwReady] = useState(false);
   const [offlineStatus, setOfflineStatus] = useState<OfflineCacheStatus | null>(null);
   const [justReconnected, setJustReconnected] = useState(false);
+  const [verificationNoticeMsg, setVerificationNoticeMsg] = useState<string | null>(null);
+  const [refreshingVerification, setRefreshingVerification] = useState(false);
   const wasOfflineRef = React.useRef(!isOnline);
+
+  const isFirebaseVerified =
+    workspace.authMode === 'firebase' && Boolean(workspace.profile?.emailVerified || auth.currentUser?.emailVerified);
 
   // Global search filters
   const [globalQuery, setGlobalQuery] = useState('');
@@ -192,57 +322,181 @@ export const App: React.FC = () => {
   const [searchSubject, setSearchSubject] = useState('ALL');
   const [searchLanguage, setSearchLanguage] = useState('ALL');
 
+  const hydrateFirebaseWorkspace = React.useCallback(async (fbUser: FirebaseUser) => {
+    const cachedSnap = await readOfflineSnapshotFromCache(fbUser.uid);
+    const isBootAdmin =
+      fbUser.email?.toLowerCase() === 'venkatramveni@gmail.com' && fbUser.emailVerified;
+
+    if (!fbUser.emailVerified) {
+      const unverifiedProfile =
+        cachedSnap?.profile ??
+        createDefaultProfile({
+          uid: fbUser.uid,
+          displayName: fbUser.displayName || 'Student',
+          email: fbUser.email || undefined,
+          emailVerified: false,
+          role: 'student',
+          onboardingComplete: true,
+        });
+      const base = createInitialWorkspaceState('firebase');
+      setWorkspace({
+        ...base,
+        authMode: 'firebase',
+        profile: { ...unverifiedProfile, emailVerified: false },
+        progress: cachedSnap?.progress ?? [],
+        savedNotes: cachedSnap?.savedNotes?.length ? cachedSnap.savedNotes : base.savedNotes,
+        offlineLessonIds: cachedSnap?.offlineLessonIds?.length ? cachedSnap.offlineLessonIds : base.offlineLessonIds,
+        studyPlans: cachedSnap?.studyPlans?.length ? cachedSnap.studyPlans : base.studyPlans,
+        attempts: cachedSnap?.attempts?.length ? cachedSnap.attempts : base.attempts,
+      });
+      setTheme(unverifiedProfile.theme);
+      return;
+    }
+
+    let profile = navigator.onLine
+      ? await fetchUserProfile(fbUser.uid).catch(() => null)
+      : cachedSnap?.profile ?? null;
+
+    if (!profile && cachedSnap?.profile) {
+      profile = cachedSnap.profile;
+    }
+
+    if (!profile) {
+      profile = createDefaultProfile({
+        uid: fbUser.uid,
+        displayName: fbUser.displayName || 'Student',
+        email: fbUser.email || undefined,
+        emailVerified: true,
+        role: isBootAdmin ? 'admin' : 'student',
+        onboardingComplete: false,
+      });
+      if (navigator.onLine) {
+        await saveUserProfileToFirestore(profile, true).catch(() => {});
+      }
+    } else {
+      profile = { ...profile, emailVerified: true };
+    }
+
+    const [
+      remoteProgress,
+      remoteAttempts,
+      remotePlans,
+      remoteConversations,
+      remoteNotes,
+      remoteNotifications,
+      remoteSubmissions,
+    ] = navigator.onLine
+      ? await Promise.all([
+          fetchUserProgress(fbUser.uid).catch(() => []),
+          fetchQuizAttemptsFromFirestore(fbUser.uid).catch(() => []),
+          fetchStudyPlansFromFirestore(fbUser.uid).catch(() => []),
+          fetchConversationsFromFirestore(fbUser.uid).catch(() => []),
+          fetchSavedNotesFromFirestore(fbUser.uid).catch(() => []),
+          fetchNotificationsFromFirestore(fbUser.uid).catch(() => []),
+          fetchSubmissionsFromFirestore(fbUser.uid, profile.role).catch(() => []),
+        ])
+      : [[], [], [], [], [], [], []];
+
+    const mergedProgressAndNotes = mergeOfflineProgressAndNotes({
+      baseProgress: remoteProgress,
+      cachedProgress: cachedSnap?.progress ?? [],
+      baseNotes: remoteNotes,
+      cachedNotes: cachedSnap?.savedNotes ?? [],
+    });
+
+    const mergedPlans = mergeItemsById(cachedSnap?.studyPlans ?? [], remotePlans);
+    const mergedAttempts = mergeItemsById(cachedSnap?.attempts ?? [], remoteAttempts).sort(
+      (a, b) => (Date.parse(a.submittedAt) || 0) - (Date.parse(b.submittedAt) || 0)
+    );
+
+    const base = createInitialWorkspaceState('firebase');
+    setWorkspace({
+      ...base,
+      authMode: 'firebase',
+      profile,
+      progress: mergedProgressAndNotes.progress,
+      savedNotes:
+        mergedProgressAndNotes.savedNotes.length > 0
+          ? mergedProgressAndNotes.savedNotes
+          : base.savedNotes,
+      offlineLessonIds:
+        cachedSnap?.offlineLessonIds && cachedSnap.offlineLessonIds.length > 0
+          ? cachedSnap.offlineLessonIds
+          : base.offlineLessonIds,
+      studyPlans: mergedPlans.length > 0 ? mergedPlans : base.studyPlans,
+      attempts: mergedAttempts.length > 0 ? mergedAttempts : base.attempts,
+      conversations: remoteConversations.length > 0 ? remoteConversations : base.conversations,
+      notifications: remoteNotifications.length > 0 ? remoteNotifications : base.notifications,
+      submissions: remoteSubmissions,
+    });
+    setTheme(profile.theme);
+  }, []);
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  // Register Service Worker and hydrate from Cache Storage if offline
+  // Real study-task reminder scheduler (checks every 30s)
+  useEffect(() => {
+    if (!workspace.profile) return;
+    const runCheck = () => {
+      const due = getDueReminderTasks(
+        workspace.studyPlans,
+        new Date(),
+        triggeredReminderIdsRef.current
+      );
+      if (due.length === 0) return;
+      const nowIso = new Date().toISOString();
+      due.forEach((t) => {
+        triggeredReminderIdsRef.current.add(t.id);
+        const title = `Study Reminder: ${t.title}`;
+        const message = `${t.subject} scheduled for ${t.scheduledTime || 'today'}.`;
+        const newNotif: NotificationItem = {
+          id: `notif_rem_${t.id}_${Date.now()}`,
+          uid: workspace.profile?.uid || 'student',
+          title,
+          message,
+          category: 'study',
+          read: false,
+          createdAt: nowIso,
+        };
+        setReminderToast({ id: t.id, title, message });
+        setWorkspace((w) => ({
+          ...w,
+          notifications: [newNotif, ...w.notifications].slice(0, 30),
+        }));
+        if (isFirebaseVerified) {
+          saveNotificationToFirestore(newNotif).catch(console.error);
+        }
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+          try {
+            new Notification(title, { body: message });
+          } catch {
+            // Ignore browser Notification constructor restrictions
+          }
+        }
+      });
+    };
+    runCheck();
+    const timer = window.setInterval(runCheck, 30_000);
+    return () => clearInterval(timer);
+  }, [workspace.profile, workspace.studyPlans, isFirebaseVerified]);
+
+  // Register Service Worker (never auto-hydrate anonymous visitors into cached user snapshots)
   useEffect(() => {
     initServiceWorkerRegistration((registered) => {
       setSwReady(registered);
     });
-
-    if (!navigator.onLine) {
-      readOfflineSnapshotFromCache().then((snap) => {
-        if (!snap) return;
-        setWorkspace((prev) => {
-          if (prev.profile) {
-            const merged = mergeOfflineProgressAndNotes({
-              baseProgress: prev.progress,
-              cachedProgress: snap.progress,
-              baseNotes: prev.savedNotes,
-              cachedNotes: snap.savedNotes,
-            });
-            return {
-              ...prev,
-              lessons: snap.lessons.length > 0 ? snap.lessons : prev.lessons,
-              offlineLessonIds: snap.offlineLessonIds,
-              progress: merged.progress,
-              savedNotes: merged.savedNotes,
-              studyPlans: snap.studyPlans.length > 0 ? snap.studyPlans : prev.studyPlans,
-              attempts: snap.attempts.length > 0 ? snap.attempts : prev.attempts,
-            };
-          }
-          const base = createInitialWorkspaceState('demo');
-          return {
-            ...base,
-            profile: snap.profile,
-            lessons: snap.lessons.length > 0 ? snap.lessons : base.lessons,
-            offlineLessonIds: snap.offlineLessonIds,
-            progress: snap.progress,
-            savedNotes: snap.savedNotes,
-            studyPlans: snap.studyPlans,
-            attempts: snap.attempts,
-          };
-        });
-      });
-    }
   }, []);
 
   // Mandatory Firebase boot connection check
   useEffect(() => {
     if (navigator.onLine) {
-      testFirestoreConnection();
+      testFirestoreConnection().then((res) => {
+        if (!res.ok && res.message) {
+          console.warn('Firestore startup check:', res.message);
+        }
+      });
     }
   }, []);
 
@@ -251,76 +505,25 @@ export const App: React.FC = () => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) return;
       try {
-        const cachedSnap = await readOfflineSnapshotFromCache(fbUser.uid);
-        let profile = navigator.onLine
-          ? await fetchUserProfile(fbUser.uid).catch(() => null)
-          : cachedSnap?.profile ?? null;
-
-        if (!profile && cachedSnap?.profile) {
-          profile = cachedSnap.profile;
-        }
-
-        const isBootAdmin =
-          fbUser.email === 'venkatramveni@gmail.com' && fbUser.emailVerified;
-
-        if (!profile) {
-          profile = createDefaultProfile({
-            uid: fbUser.uid,
-            displayName: fbUser.displayName || 'Student',
-            email: fbUser.email || undefined,
-            emailVerified: fbUser.emailVerified,
-            role: isBootAdmin ? 'admin' : 'student',
-            onboardingComplete: false,
-          });
-          if (navigator.onLine) {
-            await saveUserProfileToFirestore(profile, true).catch(() => {});
-          }
-        }
-
-        const remoteProgress = navigator.onLine
-          ? await fetchUserProgress(fbUser.uid).catch(() => [])
-          : [];
-        const merged = mergeOfflineProgressAndNotes({
-          baseProgress: remoteProgress,
-          cachedProgress: cachedSnap?.progress ?? [],
-          baseNotes: [],
-          cachedNotes: cachedSnap?.savedNotes ?? [],
-        });
-
-        const base = createInitialWorkspaceState('firebase');
-        setWorkspace({
-          ...base,
-          authMode: 'firebase',
-          profile,
-          progress: merged.progress,
-          savedNotes: merged.savedNotes.length > 0 ? merged.savedNotes : base.savedNotes,
-          offlineLessonIds:
-            cachedSnap?.offlineLessonIds && cachedSnap.offlineLessonIds.length > 0
-              ? cachedSnap.offlineLessonIds
-              : base.offlineLessonIds,
-          studyPlans:
-            cachedSnap?.studyPlans && cachedSnap.studyPlans.length > 0
-              ? cachedSnap.studyPlans
-              : base.studyPlans,
-          attempts:
-            cachedSnap?.attempts && cachedSnap.attempts.length > 0
-              ? cachedSnap.attempts
-              : base.attempts,
-        });
-        setTheme(profile.theme);
+        await hydrateFirebaseWorkspace(fbUser);
       } catch (err) {
         console.error('Firebase hydration warning:', err);
       }
     });
     return () => unsub();
-  }, []);
+  }, [hydrateFirebaseWorkspace]);
 
-  // Persist demo workspace locally AND mirror essential My Lessons, Saved Notes & progress to SW Cache Storage
+  // Persist demo workspace locally AND mirror essential My Lessons, Saved Notes & progress to SW Cache Storage for signed-in users
   useEffect(() => {
     if (workspace.authMode === 'demo') {
       saveWorkspaceToStorage(workspace);
     }
-    if (workspace.profile) {
+    if (
+      workspace.profile &&
+      workspace.profile.uid &&
+      workspace.profile.uid !== 'demo_guest' &&
+      (workspace.authMode !== 'firebase' || isFirebaseVerified)
+    ) {
       syncOfflineSnapshotToCache({
         profile: workspace.profile,
         lessons: workspace.lessons,
@@ -334,9 +537,9 @@ export const App: React.FC = () => {
         .then((status) => setOfflineStatus(status))
         .catch(() => {});
     }
-  }, [workspace]);
+  }, [workspace, isFirebaseVerified]);
 
-  // Reconnect sync: flush cached progress & study plans when coming back online
+  // Reconnect sync: flush cached progress, study plans & notes when coming back online
   useEffect(() => {
     if (!isOnline) {
       wasOfflineRef.current = true;
@@ -345,18 +548,19 @@ export const App: React.FC = () => {
     if (wasOfflineRef.current) {
       wasOfflineRef.current = false;
       prefetchEssentialCurriculum().catch(() => {});
-      if (workspace.authMode === 'firebase' && workspace.profile) {
+      if (isFirebaseVerified && workspace.profile) {
         const uid = workspace.profile.uid;
         Promise.all([
           ...workspace.progress.map((p) => upsertLearningProgress(uid, p).catch(() => {})),
           ...workspace.studyPlans.map((t) => saveStudyPlanToFirestore(t, false).catch(() => {})),
+          ...workspace.savedNotes.map((n) => saveSavedNoteToFirestore(uid, n).catch(() => {})),
         ]).catch(() => {});
       }
       setJustReconnected(true);
       const timer = window.setTimeout(() => setJustReconnected(false), 3500);
       return () => clearTimeout(timer);
     }
-  }, [isOnline, workspace.authMode, workspace.profile, workspace.progress, workspace.studyPlans]);
+  }, [isOnline, isFirebaseVerified, workspace.profile, workspace.progress, workspace.studyPlans, workspace.savedNotes]);
 
   const toggleTheme = () => {
     const next: ThemeMode = theme === 'dark' ? 'light' : 'dark';
@@ -364,7 +568,7 @@ export const App: React.FC = () => {
     if (workspace.profile) {
       const updated = { ...workspace.profile, theme: next, updatedAt: new Date().toISOString() };
       setWorkspace((w) => ({ ...w, profile: updated }));
-      if (workspace.authMode === 'firebase') {
+      if (isFirebaseVerified) {
         saveUserProfileToFirestore(updated, false).catch(console.error);
       }
     }
@@ -415,12 +619,39 @@ export const App: React.FC = () => {
     setAuthError(null);
     setAuthSuccess(null);
     try {
-      await signUpWithEmail(email, password, displayName);
-      setAuthSuccess('Account created! A verification email was sent to your inbox.');
+      const signUpRes = await signUpWithEmail(email, password, displayName);
+      if (signUpRes.verificationSent) {
+        setAuthSuccess('Account created! A verification email was sent to your inbox. Open the link inside to enable cloud sync.');
+      } else {
+        setAuthError(
+          signUpRes.verificationError ||
+            'Account created, but verification email could not be sent. Use Resend Verification after signing in.'
+        );
+      }
     } catch (err: unknown) {
       setAuthError(formatAuthErrorMessage(err));
     } finally {
       setAuthLoading(false);
+    }
+  };
+
+  const handleRefreshVerificationStatus = async () => {
+    if (!auth.currentUser) return;
+    setRefreshingVerification(true);
+    setVerificationNoticeMsg(null);
+    try {
+      await auth.currentUser.reload();
+      await auth.currentUser.getIdToken(true);
+      if (auth.currentUser.emailVerified) {
+        await hydrateFirebaseWorkspace(auth.currentUser);
+        setVerificationNoticeMsg(null);
+      } else {
+        setVerificationNoticeMsg('Your email is still unverified. Click the link in your inbox, then press Refresh again.');
+      }
+    } catch (err: unknown) {
+      setVerificationNoticeMsg(err instanceof Error ? err.message : 'Unable to refresh verification status right now.');
+    } finally {
+      setRefreshingVerification(false);
     }
   };
 
@@ -447,17 +678,44 @@ export const App: React.FC = () => {
   };
 
   const handleSignOut = async () => {
+    const uid = workspace.profile?.uid;
     if (workspace.authMode === 'firebase') {
       await signOutFirebase().catch(() => {});
     }
+    if (uid) {
+      await clearOfflineCacheForUser(uid);
+    }
+    await clearAllOfflineUserSnapshots();
     clearWorkspaceStorage();
     setWorkspace(createInitialWorkspaceState('unauthenticated'));
     setActiveModule('dashboard');
   };
 
   const handleCompleteOnboarding = async (updatedProfile: UserProfile) => {
-    setWorkspace((w) => ({ ...w, profile: updatedProfile }));
-    if (workspace.authMode === 'firebase') {
+    setWorkspace((w) => {
+      const classChanged = Boolean(w.profile && updatedProfile.classLevel !== w.profile.classLevel);
+      let nextStudyPlans = w.studyPlans;
+      if (classChanged) {
+        const nowIso = new Date().toISOString();
+        const todayStr = nowIso.slice(0, 10);
+        const customOrDone = w.studyPlans.filter(
+          (t) => !(t.id.startsWith('plan_seed_') && !t.completed)
+        );
+        const newSeeds = getClassSpecificStudyPlanSeeds(
+          updatedProfile.uid,
+          updatedProfile.classLevel,
+          todayStr,
+          nowIso
+        );
+        nextStudyPlans = [...newSeeds, ...customOrDone];
+      }
+      return {
+        ...w,
+        profile: updatedProfile,
+        studyPlans: nextStudyPlans,
+      };
+    });
+    if (isFirebaseVerified) {
       await saveUserProfileToFirestore(updatedProfile, false).catch(console.error);
       await writeAuditLogToFirestore(updatedProfile.uid, 'Completed student onboarding', `users/${updatedProfile.uid}`).catch(() => {});
     }
@@ -491,27 +749,29 @@ export const App: React.FC = () => {
       lastStudiedAt: now,
     };
 
+    const completedNotif: NotificationItem | null = nextItem.completed
+      ? {
+          id: `notif_${Date.now()}`,
+          uid: workspace.profile.uid,
+          title: 'Lesson Completed',
+          message: `Great work finishing "${lesson.title}"!`,
+          category: 'milestone',
+          read: false,
+          createdAt: now,
+        }
+      : null;
+
     setWorkspace((w) => {
       const rest = w.progress.filter((p) => p.lessonId !== lesson.id);
-      const nextNotifs = nextItem.completed
-        ? [
-            {
-              id: `notif_${Date.now()}`,
-              uid: w.profile!.uid,
-              title: 'Lesson Completed',
-              message: `Great work finishing "${lesson.title}"!`,
-              category: 'milestone' as const,
-              read: false,
-              createdAt: now,
-            },
-            ...w.notifications,
-          ]
-        : w.notifications;
+      const nextNotifs = completedNotif ? [completedNotif, ...w.notifications] : w.notifications;
       return { ...w, progress: [...rest, nextItem], notifications: nextNotifs };
     });
 
-    if (workspace.authMode === 'firebase') {
+    if (isFirebaseVerified) {
       upsertLearningProgress(workspace.profile.uid, nextItem).catch(console.error);
+      if (completedNotif) {
+        saveNotificationToFirestore(completedNotif).catch(console.error);
+      }
     }
   };
 
@@ -530,7 +790,7 @@ export const App: React.FC = () => {
       ...w,
       progress: [...w.progress.filter((p) => p.lessonId !== lesson.id), nextItem],
     }));
-    if (workspace.authMode === 'firebase') {
+    if (isFirebaseVerified) {
       upsertLearningProgress(workspace.profile.uid, nextItem).catch(console.error);
     }
   };
@@ -540,14 +800,14 @@ export const App: React.FC = () => {
       ...w,
       attempts: [...w.attempts, attempt],
     }));
-    if (workspace.authMode === 'firebase') {
+    if (isFirebaseVerified) {
       saveQuizAttemptToFirestore(attempt).catch(console.error);
     }
   };
 
   const handleAddStudyTask = (task: StudyPlanTask) => {
     setWorkspace((w) => ({ ...w, studyPlans: [task, ...w.studyPlans] }));
-    if (workspace.authMode === 'firebase') {
+    if (isFirebaseVerified) {
       saveStudyPlanToFirestore(task, true).catch(console.error);
     }
   };
@@ -557,7 +817,7 @@ export const App: React.FC = () => {
       ...w,
       studyPlans: w.studyPlans.map((t) => (t.id === updated.id ? updated : t)),
     }));
-    if (workspace.authMode === 'firebase') {
+    if (isFirebaseVerified) {
       saveStudyPlanToFirestore(updated, false).catch(console.error);
     }
   };
@@ -582,7 +842,7 @@ export const App: React.FC = () => {
         studyPlans: nextRecurring ? [nextRecurring, ...updatedList] : updatedList,
       };
     });
-    if (workspace.authMode === 'firebase' && target) {
+    if (isFirebaseVerified && target) {
       saveStudyPlanToFirestore(target, false).catch(console.error);
       if (nextRecurring) {
         saveStudyPlanToFirestore(nextRecurring, true).catch(console.error);
@@ -595,6 +855,9 @@ export const App: React.FC = () => {
       ...w,
       studyPlans: w.studyPlans.filter((t) => t.id !== id),
     }));
+    if (isFirebaseVerified) {
+      deleteStudyPlanFromFirestore(id).catch(console.error);
+    }
   };
 
   const handleSaveUploadedDoc = (docItem: UploadedDocItem) => {
@@ -654,13 +917,27 @@ export const App: React.FC = () => {
     }));
   };
 
+  const handleAddGuideLink = (link: SavedGuideLink) => {
+    setWorkspace((w) => ({
+      ...w,
+      savedGuideLinks: [link, ...w.savedGuideLinks.filter((item) => item.url !== link.url)],
+    }));
+  };
+
+  const handleDeleteGuideLink = (id: string) => {
+    setWorkspace((w) => ({
+      ...w,
+      savedGuideLinks: w.savedGuideLinks.filter((item) => item.id !== id),
+    }));
+  };
+
   const handleExportUserData = () => {
     const payload = buildUserDataExportPayload(workspace);
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `muse_ai_data_${workspace.profile?.uid || 'export'}.json`;
+    a.download = `nano_ai_data_${workspace.profile?.uid || 'export'}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -674,7 +951,7 @@ export const App: React.FC = () => {
       return { ...w, conversations: next };
     });
 
-    if (workspace.authMode === 'firebase' && thread.messages.length > 0) {
+    if (isFirebaseVerified && thread.messages.length > 0) {
       const latest = thread.messages[thread.messages.length - 1];
       saveConversationMessageToFirestore(thread, latest.id, latest.sender, latest.text).catch(
         console.error
@@ -687,10 +964,16 @@ export const App: React.FC = () => {
       ...w,
       conversations: w.conversations.filter((c) => c.id !== threadId),
     }));
+    if (isFirebaseVerified) {
+      deleteConversationFromFirestore(threadId).catch(console.error);
+    }
   };
 
   const handleSaveNote = (note: SavedNote) => {
     setWorkspace((w) => ({ ...w, savedNotes: [note, ...w.savedNotes] }));
+    if (isFirebaseVerified && workspace.profile) {
+      saveSavedNoteToFirestore(workspace.profile.uid, note).catch(console.error);
+    }
   };
 
   const handleDeleteNote = (noteId: string) => {
@@ -698,6 +981,9 @@ export const App: React.FC = () => {
       ...w,
       savedNotes: w.savedNotes.filter((n) => n.id !== noteId),
     }));
+    if (isFirebaseVerified) {
+      deleteSavedNoteFromFirestore(noteId).catch(console.error);
+    }
   };
 
   const handleToggleOfflineLesson = (lesson: LessonItem) => {
@@ -730,62 +1016,9 @@ export const App: React.FC = () => {
 
   const handleSubmitAssignment = (sub: AssignmentSubmission) => {
     setWorkspace((w) => ({ ...w, submissions: [sub, ...w.submissions] }));
-  };
-
-  const handleCreateAssignment = (asgn: AssignmentItem) => {
-    setWorkspace((w) => ({
-      ...w,
-      assignments: [asgn, ...w.assignments],
-      auditLogs: [
-        ...w.auditLogs,
-        {
-          id: `audit_${Date.now()}`,
-          actorUid: w.profile?.uid || 'teacher',
-          actorName: w.profile?.displayName || 'Teacher',
-          action: `Published assignment "${asgn.title}"`,
-          targetPath: `/assignments/${asgn.id}`,
-          createdAt: new Date().toISOString(),
-        },
-      ],
-    }));
-  };
-
-  const handleCreateQuestionAndQuiz = (q: QuestionItem, quizTitle: string) => {
-    setWorkspace((w) => ({
-      ...w,
-      questions: [...w.questions, q],
-      assessments: [
-        {
-          id: `quiz_teacher_${Date.now()}`,
-          title: quizTitle,
-          mode: 'daily_quiz',
-          board: q.board,
-          classLevel: q.classLevel,
-          subject: q.subject,
-          durationMinutes: 5,
-          questionIds: [q.id],
-          createdBy: q.createdBy,
-        },
-        ...w.assessments,
-      ],
-    }));
-  };
-
-  const handleReviewSubmission = (submissionId: string, feedback: string, grade: string) => {
-    setWorkspace((w) => ({
-      ...w,
-      submissions: w.submissions.map((s) =>
-        s.id === submissionId
-          ? {
-              ...s,
-              status: 'reviewed',
-              teacherFeedback: feedback,
-              grade,
-              updatedAt: new Date().toISOString(),
-            }
-          : s
-      ),
-    }));
+    if (isFirebaseVerified) {
+      saveSubmissionToFirestore(sub).catch(console.error);
+    }
   };
 
   const handleAddLesson = (lesson: LessonItem) => {
@@ -809,14 +1042,18 @@ export const App: React.FC = () => {
   const handleDeleteAccount = async () => {
     const uid = workspace.profile?.uid;
     if (workspace.authMode === 'firebase' && workspace.profile) {
-      await deleteUserAccountFromFirestore(workspace.profile.uid).catch(console.error);
-      await deleteCurrentFirebaseUser().catch(console.error);
+      if (auth.currentUser?.emailVerified) {
+        await deleteUserAccountFromFirestore(workspace.profile.uid);
+      }
+      await deleteCurrentFirebaseUser();
     }
     if (uid) {
       await clearOfflineCacheForUser(uid);
     }
+    await clearAllOfflineUserSnapshots();
     clearWorkspaceStorage();
     setWorkspace(createInitialWorkspaceState('unauthenticated'));
+    setActiveModule('dashboard');
   };
 
   // Global search results
@@ -886,34 +1123,33 @@ export const App: React.FC = () => {
   const unreadNotifCount = workspace.notifications.filter((n) => !n.read).length;
 
   const allowedNavItems = NAV_ITEMS.filter((item) => {
-    if (item.group === 'primary' || item.group === 'academies') return true;
+    if (item.group === 'primary' || item.group === 'guides' || item.group === 'academies') return true;
     // In Demo mode, all portals are inspectable for testing; in Firebase mode, enforce role strictly!
     if (workspace.authMode === 'demo') return true;
     if (item.id === 'parent_portal') return profile.role === 'parent' || profile.role === 'admin';
-    if (item.id === 'teacher_portal') return profile.role === 'teacher' || profile.role === 'admin';
     if (item.id === 'admin_panel') return profile.role === 'admin';
     return false;
   });
 
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row bg-[var(--bg-app)] text-[var(--text-primary)]">
+    <div className="min-h-screen flex flex-col lg:flex-row nano-app-canvas text-[var(--text-primary)]">
       {/* Desktop Sidebar */}
-      <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:h-screen lg:sticky lg:top-0 border-r border-[var(--border-subtle)] bg-[var(--bg-surface)] shrink-0 no-print">
+      <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:h-screen lg:sticky lg:top-0 border-r border-[var(--border-subtle)] bg-[var(--bg-surface)]/95 backdrop-blur-md shrink-0 no-print">
         <div className="p-4 border-b border-[var(--border-subtle)] flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl muse-btn-primary flex items-center justify-center font-display font-bold">
-            M
+          <div className="w-9 h-9 rounded-xl muse-btn-primary flex items-center justify-center font-display font-bold shrink-0">
+            N
           </div>
           <div>
-            <div className="font-display font-bold text-base leading-tight">Muse AI</div>
+            <div className="font-display font-bold text-base leading-tight">Nano AI</div>
             <div className="text-[11px] text-[var(--text-muted)]">
-              {workspace.authMode === 'firebase' ? 'Cloud Synced' : 'Demo Workspace'}
+              Class {profile.classLevel} • {workspace.authMode === 'firebase' ? 'Cloud Synced' : 'Demo Workspace'}
             </div>
           </div>
         </div>
 
         <nav aria-label="Primary Sidebar Navigation" className="flex-1 p-3 space-y-1 overflow-y-auto">
           <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
-            MUSE AI Workspace
+            Nano AI Workspace
           </div>
           {allowedNavItems
             .filter((i) => i.group === 'primary')
@@ -922,9 +1158,30 @@ export const App: React.FC = () => {
                 key={item.id}
                 type="button"
                 onClick={() => handleNavigate(item.id)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium ${
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium whitespace-nowrap shrink-0 ${
                   activeModule === item.id
                     ? 'bg-[var(--bg-subtle)] text-blue-400 font-semibold border border-blue-500/30'
+                    : 'text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]'
+                }`}
+              >
+                <item.icon className="w-4 h-4 shrink-0" />
+                <span>{item.label}</span>
+              </button>
+            ))}
+
+          <div className="px-2.5 pt-3.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-cyan-400">
+            Guides
+          </div>
+          {allowedNavItems
+            .filter((i) => i.group === 'guides')
+            .map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handleNavigate(item.id)}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium whitespace-nowrap shrink-0 ${
+                  activeModule === item.id
+                    ? 'bg-[var(--bg-subtle)] text-cyan-300 font-semibold border border-cyan-500/40'
                     : 'text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]'
                 }`}
               >
@@ -943,7 +1200,7 @@ export const App: React.FC = () => {
                 key={item.id}
                 type="button"
                 onClick={() => handleNavigate(item.id)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium ${
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium whitespace-nowrap shrink-0 ${
                   activeModule === item.id
                     ? 'bg-[var(--bg-subtle)] text-emerald-400 font-semibold border border-emerald-500/30'
                     : 'text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]'
@@ -964,7 +1221,7 @@ export const App: React.FC = () => {
                 key={item.id}
                 type="button"
                 onClick={() => handleNavigate(item.id)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition ${
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition whitespace-nowrap shrink-0 ${
                   activeModule === item.id
                     ? 'bg-[var(--bg-subtle)] text-purple-400 font-semibold border border-purple-500/30'
                     : 'text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]'
@@ -980,7 +1237,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={handleSignOut}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-rose-500/40"
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-rose-500/40 whitespace-nowrap"
           >
             <LogOut className="w-3.5 h-3.5" /> Sign Out
           </button>
@@ -992,7 +1249,7 @@ export const App: React.FC = () => {
         <div className="fixed inset-0 z-50 lg:hidden flex">
           <div className="w-72 bg-[var(--bg-surface)] border-r border-[var(--border-subtle)] p-4 flex flex-col">
             <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
-              <span className="font-display font-bold text-base">Muse AI Navigation</span>
+              <span className="font-display font-bold text-base">Nano AI Navigation</span>
               <button
                 type="button"
                 aria-label="Close navigation menu"
@@ -1008,13 +1265,13 @@ export const App: React.FC = () => {
                   key={item.id}
                   type="button"
                   onClick={() => handleNavigate(item.id)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-medium ${
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-medium whitespace-nowrap shrink-0 ${
                     activeModule === item.id
                       ? 'bg-[var(--bg-subtle)] text-blue-400 font-semibold'
                       : 'text-[var(--text-secondary)]'
                   }`}
                 >
-                  <item.icon className="w-4 h-4" />
+                  <item.icon className="w-4 h-4 shrink-0" />
                   <span>{item.label}</span>
                 </button>
               ))}
@@ -1033,7 +1290,7 @@ export const App: React.FC = () => {
 
       {/* Main Content Shell */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 sm:px-6 py-3 flex items-center justify-between gap-3 no-print">
+        <header className="border-b border-[var(--border-subtle)] bg-[var(--bg-surface)]/92 backdrop-blur-md px-4 sm:px-6 py-3 flex items-center justify-between gap-3 no-print">
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -1095,12 +1352,16 @@ export const App: React.FC = () => {
                     <span className="font-display font-bold text-sm">Notifications</span>
                     <button
                       type="button"
-                      onClick={() =>
+                      onClick={() => {
+                        const unreadIds = workspace.notifications.filter((n) => !n.read).map((n) => n.id);
                         setWorkspace((w) => ({
                           ...w,
                           notifications: w.notifications.map((n) => ({ ...n, read: true })),
-                        }))
-                      }
+                        }));
+                        if (isFirebaseVerified && unreadIds.length > 0) {
+                          markNotificationsReadInFirestore(unreadIds).catch(console.error);
+                        }
+                      }}
                       className="text-xs text-blue-400 hover:underline"
                     >
                       Mark all read
@@ -1137,6 +1398,48 @@ export const App: React.FC = () => {
         </header>
 
         <main className="flex-1 min-w-0 p-4 pb-20 sm:p-6 lg:pb-6 max-w-7xl w-full mx-auto">
+          {workspace.authMode === 'firebase' && !isFirebaseVerified && (
+            <div
+              role="status"
+              className="mb-4 muse-card p-4 border border-amber-500/40 bg-amber-500/10 flex flex-wrap items-center justify-between gap-3 text-xs no-print"
+            >
+              <div className="flex items-start gap-2.5">
+                <Mail className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-semibold text-amber-300">
+                    Verify your email to enable cloud sync ({profile.email || 'Account'})
+                  </div>
+                  <div className="text-[var(--text-muted)] mt-0.5">
+                    {verificationNoticeMsg ||
+                      'Check your inbox for the verification link, then click Refresh Status to unlock persistent cloud saving.'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await resendVerificationEmail().catch(() => {});
+                    setVerificationNoticeMsg('Verification email sent. Please check your inbox and spam folder.');
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] font-semibold"
+                >
+                  Resend Email
+                </button>
+                <button
+                  type="button"
+                  disabled={refreshingVerification}
+                  onClick={handleRefreshVerificationStatus}
+                  className="px-3 py-1.5 rounded-xl muse-btn-primary font-semibold disabled:opacity-50"
+                >
+                  {refreshingVerification ? 'Checking...' : "I've Verified — Refresh"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <ModuleErrorBoundary resetKey={activeModule}>
+            <Suspense fallback={<ModuleLoadingFallback />}>
           {activeModule === 'dashboard' && (
             <StudentDashboard
               workspace={workspace}
@@ -1153,6 +1456,9 @@ export const App: React.FC = () => {
             <AITeacherView
               profile={profile}
               conversations={workspace.conversations}
+              uploadedDocs={workspace.uploadedDocs}
+              activeDocId={aiActiveDocId}
+              onSelectActiveDoc={setAiActiveDocId}
               initialSubject={aiContextSubject}
               initialPrompt={aiInitialPrompt}
               onConsumeInitialPrompt={() => setAiInitialPrompt(null)}
@@ -1166,11 +1472,13 @@ export const App: React.FC = () => {
           {activeModule === 'voice_ai' && (
             <VoiceAIView
               profile={profile}
-              onSaveVoicePreference={(voiceAutoSpeak, speechRate) =>
+              onSaveVoicePreference={(voiceAutoSpeak, speechRate, voicePreset, speechPitch) =>
                 handleCompleteOnboarding({
                   ...profile,
                   voiceAutoSpeak,
                   speechRate,
+                  ...(voicePreset ? { voicePreset } : {}),
+                  ...(typeof speechPitch === 'number' ? { speechPitch } : {}),
                   updatedAt: new Date().toISOString(),
                 })
               }
@@ -1208,6 +1516,12 @@ export const App: React.FC = () => {
               profile={profile}
               tasks={workspace.studyPlans}
               assignments={workspace.assignments}
+              lessons={workspace.lessons}
+              progress={workspace.progress}
+              attempts={workspace.attempts}
+              questions={workspace.questions}
+              initialTaskDraft={plannerTaskDraft}
+              onConsumeTaskDraft={() => setPlannerTaskDraft(null)}
               onAddTask={handleAddStudyTask}
               onUpdateTask={handleUpdateStudyTask}
               onToggleTask={handleToggleStudyTask}
@@ -1233,6 +1547,23 @@ export const App: React.FC = () => {
                 if (subject) setAiContextSubject(subject);
                 if (prompt) setAiInitialPrompt(prompt);
                 handleNavigate('ai_teacher');
+              }}
+              onAskDocFollowUp={(docItem, subject) => {
+                setAiActiveDocId(docItem.id);
+                if (subject) setAiContextSubject(subject);
+                handleNavigate('ai_teacher');
+              }}
+              onScheduleLesson={(lesson) => {
+                setPlannerTaskDraft({
+                  title: `Study lesson: ${lesson.title}`,
+                  subject: lesson.subject,
+                });
+                handleNavigate('study_planner');
+              }}
+              onFindVideos={(lesson) => {
+                setVideoInitialSubject(lesson.subject);
+                setVideoInitialSearch(lesson.chapter);
+                handleNavigate('video_academy');
               }}
               onRecordAttempt={handleRecordAttempt}
               onMarkVideoWatched={handleMarkVideoWatched}
@@ -1267,6 +1598,18 @@ export const App: React.FC = () => {
                 if (subject) setAiContextSubject(subject);
                 handleNavigate('ai_teacher');
               }}
+              onScheduleLesson={(lesson) => {
+                setPlannerTaskDraft({
+                  title: `Study lesson: ${lesson.title}`,
+                  subject: lesson.subject,
+                });
+                handleNavigate('study_planner');
+              }}
+              onFindVideos={(lesson) => {
+                setVideoInitialSubject(lesson.subject);
+                setVideoInitialSearch(lesson.chapter);
+                handleNavigate('video_academy');
+              }}
             />
           )}
 
@@ -1276,6 +1619,8 @@ export const App: React.FC = () => {
               videos={workspace.videos}
               watchedIds={workspace.watchedVideoIds}
               bookmarkedIds={workspace.bookmarkedVideoIds}
+              initialSubject={videoInitialSubject}
+              initialSearch={videoInitialSearch}
               onMarkWatched={handleMarkVideoWatched}
               onToggleBookmark={handleToggleVideoBookmark}
               onAddCustomVideo={handleAddCustomVideo}
@@ -1301,6 +1646,37 @@ export const App: React.FC = () => {
               onSaveUploadedDoc={handleSaveUploadedDoc}
               onSaveNote={handleSaveNote}
               onOpenLesson={(lessonId) => handleNavigate('lesson_academy', lessonId)}
+              onAskAITeacher={(subject?: string, prompt?: string) => {
+                if (subject) setAiContextSubject(subject);
+                if (prompt) setAiInitialPrompt(prompt);
+                handleNavigate('ai_teacher');
+              }}
+              onAskDocFollowUp={(docItem, subject) => {
+                setAiActiveDocId(docItem.id);
+                if (subject) setAiContextSubject(subject);
+                handleNavigate('ai_teacher');
+              }}
+            />
+          )}
+
+          {activeModule === 'guides' && (
+            <GuidesView
+              profile={profile}
+              savedGuideLinks={workspace.savedGuideLinks}
+              onAddGuideLink={handleAddGuideLink}
+              onDeleteGuideLink={handleDeleteGuideLink}
+              onSaveNote={handleSaveNote}
+              onAskAITeacher={(subject?: string, prompt?: string) => {
+                if (subject) setAiContextSubject(subject);
+                if (prompt) setAiInitialPrompt(prompt);
+                handleNavigate('ai_teacher');
+              }}
+            />
+          )}
+
+          {activeModule === 'viewer_3d' && (
+            <Viewer3DView
+              profile={profile}
               onAskAITeacher={(subject?: string, prompt?: string) => {
                 if (subject) setAiContextSubject(subject);
                 if (prompt) setAiInitialPrompt(prompt);
@@ -1388,15 +1764,6 @@ export const App: React.FC = () => {
             />
           )}
 
-          {activeModule === 'teacher_portal' && (
-            <TeacherPortalView
-              workspace={workspace}
-              onCreateAssignment={handleCreateAssignment}
-              onCreateQuestionAndQuiz={handleCreateQuestionAndQuiz}
-              onReviewSubmission={handleReviewSubmission}
-            />
-          )}
-
           {activeModule === 'admin_panel' && (
             <AdminPanelView
               workspace={workspace}
@@ -1409,6 +1776,8 @@ export const App: React.FC = () => {
               }
             />
           )}
+            </Suspense>
+          </ModuleErrorBoundary>
         </main>
       </div>
 
@@ -1610,6 +1979,28 @@ export const App: React.FC = () => {
         onClose={() => setGuideOpen(false)}
         onNavigate={handleNavigate}
       />
+
+      {reminderToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-16 lg:bottom-5 right-4 z-50 max-w-sm muse-card p-4 border-blue-500/50 shadow-xl flex items-start gap-3 no-print"
+        >
+          <Bell className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1 text-xs">
+            <div className="font-semibold text-[var(--text-primary)]">{reminderToast.title}</div>
+            <div className="text-[var(--text-muted)] mt-0.5">{reminderToast.message}</div>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss reminder alert"
+            onClick={() => setReminderToast(null)}
+            className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

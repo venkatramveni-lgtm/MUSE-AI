@@ -21,6 +21,7 @@
         "voiceAutoSpeak": { "type": "boolean" },
         "speechRate": { "type": "number" },
         "speechPitch": { "type": "number" },
+        "voicePreset": { "type": "string", "enum": ["Sulafat", "Kore", "Zephyr", "Aoede", "Puck", "Charon", "Fenrir"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -241,6 +242,20 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["actorUid", "action", "targetPath", "createdAt"]
+    },
+    "SavedNote": {
+      "title": "SavedNote",
+      "description": "Personal study notes saved by a student in Revision Centre, Education Hub, or Live Voice.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "content": { "type": "string", "minLength": 1, "maxLength": 6000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "subject", "title", "content", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -303,6 +318,10 @@
     "/auditLogs/{logId}": {
       "schema": { "$ref": "#/entities/AuditLog" },
       "description": "Immutable audit trail."
+    },
+    "/savedNotes/{noteId}": {
+      "schema": { "$ref": "#/entities/SavedNote" },
+      "description": "Personal study notes owned by individual students."
     }
   }
 }

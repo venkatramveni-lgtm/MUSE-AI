@@ -17,7 +17,9 @@ import {
   QuizAttempt,
   UserProfile,
 } from '../types/muse';
-import { detectWeakTopics } from '../utils/academicEngine';
+import { auth, authFetch } from '../services/firebaseClient';
+import { detectWeakTopics, gradeAssessment } from '../utils/academicEngine';
+import { filterByStudentClass, prioritizeByClassAndProfile } from '../utils/curriculumFilter';
 
 interface AssessmentCenterViewProps {
   mode: AssessmentMode;
@@ -48,13 +50,15 @@ export const AssessmentCenterView: React.FC<AssessmentCenterViewProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Practice Centre adaptive filters
+  const [myClassOnly, setMyClassOnly] = useState<boolean>(true);
   const [practiceSubject, setPracticeSubject] = useState<string>('ALL');
   const [practiceDifficulty, setPracticeDifficulty] = useState<DifficultyLevel | 'ALL'>('ALL');
 
-  const modeAssessments = useMemo(
-    () => assessments.filter((a) => a.mode === mode),
-    [assessments, mode]
-  );
+  const modeAssessments = useMemo(() => {
+    const byMode = assessments.filter((a) => a.mode === mode);
+    const ranked = prioritizeByClassAndProfile(byMode, profile);
+    return filterByStudentClass(ranked, profile.classLevel, myClassOnly);
+  }, [assessments, mode, profile, myClassOnly]);
 
   const modeAttempts = useMemo(
     () => attempts.filter((a) => a.mode === mode).slice().reverse(),
@@ -66,6 +70,8 @@ export const AssessmentCenterView: React.FC<AssessmentCenterViewProps> = ({
     [attempts, questions]
   );
 
+  const autoSubmittedRef = React.useRef(false);
+
   // Reset active session if user switches between Daily Quiz / Weekly Tests / Practice Centre
   useEffect(() => {
     setSelectedAssessment(null);
@@ -73,6 +79,7 @@ export const AssessmentCenterView: React.FC<AssessmentCenterViewProps> = ({
     setLastResult(null);
     setConfirmSubmit(false);
     setErrorMsg(null);
+    autoSubmittedRef.current = false;
   }, [mode]);
 
   useEffect(() => {
@@ -88,6 +95,21 @@ export const AssessmentCenterView: React.FC<AssessmentCenterViewProps> = ({
     }, 1000);
     return () => clearInterval(timer);
   }, [selectedAssessment, timerEnabled, lastResult]);
+
+  useEffect(() => {
+    if (
+      selectedAssessment &&
+      timerEnabled &&
+      secondsLeft === 0 &&
+      !lastResult &&
+      !submitting &&
+      !autoSubmittedRef.current
+    ) {
+      autoSubmittedRef.current = true;
+      setErrorMsg('Time expired — automatically submitting your answers.');
+      submitAssessment();
+    }
+  });
 
   const startAssessment = (config: AssessmentConfig, customQuestions?: QuestionItem[]) => {
     const qMap = new Map(questions.map((q) => [q.id, q]));
@@ -114,16 +136,27 @@ export const AssessmentCenterView: React.FC<AssessmentCenterViewProps> = ({
     setConfirmSubmit(false);
     setLastResult(null);
     setErrorMsg(null);
+    autoSubmittedRef.current = false;
   };
 
   const startAdaptivePractice = (topicFilter?: string) => {
-    let pool = questions.filter((q) => {
+    const rankedQuestions = prioritizeByClassAndProfile(questions, profile);
+    const classScoped = filterByStudentClass(rankedQuestions, profile.classLevel, myClassOnly);
+    let pool = classScoped.filter((q) => {
       if (practiceSubject !== 'ALL' && q.subject !== practiceSubject) return false;
       if (practiceDifficulty !== 'ALL' && q.difficulty !== practiceDifficulty) return false;
       if (topicFilter && q.topic !== topicFilter) return false;
       return true;
     });
-    if (pool.length === 0) pool = questions.slice(0, 4);
+    if (pool.length === 0) {
+      pool = rankedQuestions.filter((q) => {
+        if (practiceSubject !== 'ALL' && q.subject !== practiceSubject) return false;
+        if (practiceDifficulty !== 'ALL' && q.difficulty !== practiceDifficulty) return false;
+        if (topicFilter && q.topic !== topicFilter) return false;
+        return true;
+      });
+    }
+    if (pool.length === 0) pool = rankedQuestions.slice(0, 4);
 
     const cfg: AssessmentConfig = {
       id: `practice_${Date.now()}`,
@@ -144,19 +177,24 @@ export const AssessmentCenterView: React.FC<AssessmentCenterViewProps> = ({
     setErrorMsg(null);
 
     try {
-      const resp = await fetch('/api/assessments/grade', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          questionIds: activeQuestions.map((q) => q.id),
-          answers,
-          customQuestions: activeQuestions,
-        }),
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        setErrorMsg(data.error || 'Could not grade assessment on server.');
-        return;
+      let graded: { score: number; total: number; percentage: number; results: QuizAttempt['results'] };
+      if (!auth.currentUser) {
+        graded = gradeAssessment(activeQuestions, answers);
+      } else {
+        const resp = await authFetch('/api/assessments/grade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            questionIds: activeQuestions.map((q) => q.id),
+            answers,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          setErrorMsg(data.error || 'Could not grade assessment on server.');
+          return;
+        }
+        graded = data;
       }
 
       const attempt: QuizAttempt = {
@@ -166,10 +204,10 @@ export const AssessmentCenterView: React.FC<AssessmentCenterViewProps> = ({
         assessmentTitle: selectedAssessment.title,
         mode: selectedAssessment.mode,
         subject: selectedAssessment.subject,
-        score: data.score,
-        total: data.total,
-        percentage: data.percentage,
-        results: data.results,
+        score: graded.score,
+        total: graded.total,
+        percentage: graded.percentage,
+        results: graded.results,
         status: 'submitted',
         submittedAt: new Date().toISOString(),
       };
@@ -481,9 +519,33 @@ export const AssessmentCenterView: React.FC<AssessmentCenterViewProps> = ({
           <h1 className="font-display font-bold text-xl">{titleByMode}</h1>
           <p className="text-xs text-[var(--text-muted)]">
             {mode === 'practice'
-              ? 'Adaptive practice engine using your actual quiz accuracy to strengthen weak topics.'
-              : 'All scores are calculated and validated on the server; submitted records are immutable.'}
+              ? `Adaptive practice engine calibrated for Class ${profile.classLevel} (${profile.board}).`
+              : `Class ${profile.classLevel} daily quizzes & exams prioritized automatically; submitted records are immutable.`}
           </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMyClassOnly(true)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 ${
+              myClassOnly
+                ? 'bg-blue-600 text-white border-blue-500'
+                : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)]'
+            }`}
+          >
+            My Class ({profile.classLevel})
+          </button>
+          <button
+            type="button"
+            onClick={() => setMyClassOnly(false)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 ${
+              !myClassOnly
+                ? 'bg-blue-600 text-white border-blue-500'
+                : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)]'
+            }`}
+          >
+            All Classes
+          </button>
         </div>
       </div>
 

@@ -92,6 +92,33 @@ code, pre, .font-mono {
   transform: scale(0.985);
 }
 
+.nano-app-canvas {
+  position: relative;
+  background-color: var(--bg-app);
+}
+
+.nano-app-canvas::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: url('/assets/aistudio/Nano_AI__Learn_Beyond_Limits_354797fe.png');
+  background-size: cover;
+  background-position: center top;
+  background-repeat: no-repeat;
+  opacity: 0.14;
+}
+
+[data-theme='light'] .nano-app-canvas::before {
+  opacity: 0.08;
+}
+
+.nano-app-canvas > * {
+  position: relative;
+  z-index: 1;
+}
+
 @media print {
   .no-print {
     display: none !important;

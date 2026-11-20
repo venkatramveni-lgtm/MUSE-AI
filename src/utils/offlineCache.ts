@@ -22,6 +22,14 @@ export interface OfflineUserSnapshot {
   attempts: QuizAttempt[];
 }
 
+export function isMatchingOfflineSnapshot(
+  snapshot: OfflineUserSnapshot | null | undefined,
+  uid?: string
+): snapshot is OfflineUserSnapshot {
+  if (!uid || !uid.trim() || uid === 'demo_guest' || !snapshot || !snapshot.profile) return false;
+  return snapshot.uid === uid && snapshot.profile.uid === uid;
+}
+
 export function getEssentialLessonIds(
   lessons: LessonItem[],
   profile: Pick<UserProfile, 'board' | 'classLevel' | 'subjects'>,

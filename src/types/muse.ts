@@ -1,4 +1,4 @@
-export type UserRole = 'student' | 'parent' | 'teacher' | 'admin';
+export type UserRole = 'student' | 'parent' | 'admin';
 export type EducationBoard = string;
 export type ThemeMode = 'dark' | 'light';
 export type TeachingMode =
@@ -13,7 +13,13 @@ export type TeachingMode =
 export type QuestionType = 'mcq' | 'true_false' | 'fill_blank' | 'match' | 'short_answer';
 export type DifficultyLevel = 'easy' | 'medium' | 'hard';
 export type AssessmentMode = 'daily_quiz' | 'weekly_test' | 'practice';
-export type XRModelId = 'solar_system' | 'plant_cell' | 'atomic_bohr' | 'pythagoras_3d' | 'water_cycle';
+export type XRModelId =
+  | 'solar_system'
+  | 'plant_cell'
+  | 'atomic_bohr'
+  | 'pythagoras_3d'
+  | 'water_cycle'
+  | 'motion_physics';
 
 export const BLUEPRINT_LIMITS = {
   ID_REGEX: /^[a-zA-Z0-9_-]+$/,
@@ -48,6 +54,7 @@ export interface UserProfile {
   voiceAutoSpeak?: boolean;
   speechRate?: number;
   speechPitch?: number;
+  voicePreset?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -71,7 +78,7 @@ export interface LessonItem {
   explanation: string[];
   definitions: LessonDefinition[];
   examples: string[];
-  diagramType: 'photosynthesis' | 'pythagoras' | 'solar' | 'atom' | 'water_cycle' | 'grammar';
+  diagramType: 'photosynthesis' | 'pythagoras' | 'solar' | 'atom' | 'water_cycle' | 'grammar' | 'motion';
   keyPoints: string[];
   summary: string;
   practiceExercises: string[];
@@ -220,14 +227,26 @@ export interface VideoLesson {
   captions: string[];
   keyTakeaways: string[];
   xrModelId?: XRModelId;
+  externalUrl?: string;
 }
 
 export interface FlashcardItem {
   id: string;
+  classLevel?: number;
   subject: string;
   chapter: string;
   front: string;
   back: string;
+}
+
+export interface SavedGuideLink {
+  id: string;
+  title: string;
+  url: string;
+  classLevel: number;
+  subject: string;
+  channelName: string;
+  createdAt: string;
 }
 
 export interface SavedNote {
@@ -338,6 +357,7 @@ export interface GeneratedVisualDiagram {
   title: string;
   topic: string;
   subject: string;
+  classLevel?: number;
   summary: string;
   keyTakeaways: string[];
   hotspots: { label: string; detail: string }[];
@@ -463,6 +483,8 @@ export type AppModuleId =
   | 'dashboard'
   | 'ai_teacher'
   | 'voice_ai'
+  | 'guides'
+  | 'viewer_3d'
   | 'education_hub'
   | 'learning_studio'
   | 'lesson_academy'
@@ -478,5 +500,4 @@ export type AppModuleId =
   | 'achievements'
   | 'profile'
   | 'parent_portal'
-  | 'teacher_portal'
   | 'admin_panel';

@@ -53,9 +53,9 @@ const GUIDE_STEPS: GuideStep[] = [
         targetModule: 'lesson_academy',
       },
       {
-        label: 'Education Hub (Classes 1–12 · 28 Boards · 23 Languages)',
-        actionHint: 'Watch board-matched YouTube lessons & ask Muse AI Tutor side-by-side',
-        targetModule: 'education_hub',
+        label: 'Education Hub & Guides (DIKSHA, PM eVIDYA & @WORKBOOKGURUJI)',
+        actionHint: 'Watch board-matched YouTube lessons & ask Nano AI Tutor side-by-side',
+        targetModule: 'guides',
       },
       {
         label: 'Voice AI (Live Talk Real-Time Conversation)',
@@ -89,7 +89,7 @@ const GUIDE_STEPS: GuideStep[] = [
       },
       {
         label: '2. Mode → "Answer Anything" or "Step-by-step"',
-        actionHint: 'Controls whether Muse AI answers directly or breaks down steps',
+        actionHint: 'Controls whether Nano AI answers directly or breaks down steps',
       },
       {
         label: '3. Type your question → Press Enter or click ↑ Send',
@@ -136,7 +136,7 @@ export const GuidedArrowsOverlay: React.FC<GuidedArrowsOverlayProps> = ({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Muse AI Visual Arrow Instructions"
+      aria-label="Nano AI Visual Arrow Instructions"
       className="fixed inset-0 z-50 bg-black/70 backdrop-blur-[2px] flex items-center justify-center p-4"
     >
       {/* Directional Edge Pointer Anchors on Desktop/Mobile */}

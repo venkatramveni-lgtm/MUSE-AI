@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 import {
   base64Int16ToFloat32,
   buildLiveVoiceSystemInstruction,
+  DEFAULT_MUSE_VOICE_PRESET,
+  extractCompleteSpeechSentences,
   formatDurationTimer,
   parseLiveVoiceCommand,
   pcmFloat32ToInt16Base64,
+  pickPreferredSpeechVoice,
+  resolveMuseVoicePreset,
 } from './liveVoiceUtils';
 
 test('formatDurationTimer renders MM:SS cleanly', () => {
@@ -17,6 +21,8 @@ test('formatDurationTimer renders MM:SS cleanly', () => {
 test('parseLiveVoiceCommand recognizes all smart conversation commands', () => {
   assert.equal(parseLiveVoiceCommand('Hey Muse').type, 'wake');
   assert.equal(parseLiveVoiceCommand('Hey MUSEEAI!').type, 'wake');
+  assert.equal(parseLiveVoiceCommand('Hey Nano').type, 'wake');
+  assert.equal(parseLiveVoiceCommand('Hey Nano AI!').type, 'wake');
   assert.equal(parseLiveVoiceCommand('Wait').type, 'pause');
   assert.equal(parseLiveVoiceCommand('Stop talking').type, 'stop_speaking');
   assert.equal(parseLiveVoiceCommand('Repeat that').type, 'repeat');
@@ -53,7 +59,7 @@ test('PCM Float32 <-> Base64 Int16 round-trips accurately', () => {
   }
 });
 
-test('buildLiveVoiceSystemInstruction embeds student board, class and active language', () => {
+test('buildLiveVoiceSystemInstruction embeds Muse female Indian English identity, student profile, and language', () => {
   const instr = buildLiveVoiceSystemInstruction(
     {
       displayName: 'Ananya',
@@ -64,8 +70,48 @@ test('buildLiveVoiceSystemInstruction embeds student board, class and active lan
     },
     'Telugu'
   );
+  assert.match(instr, /Muse/);
+  assert.match(instr, /Indian English/);
+  assert.match(instr, /Female-sounding/);
   assert.match(instr, /Ananya/);
   assert.match(instr, /Class 11/);
   assert.match(instr, /Telangana State Board/);
   assert.match(instr, /Telugu/);
+});
+
+test('resolveMuseVoicePreset defaults to Sulafat and validates allowed presets', () => {
+  assert.equal(DEFAULT_MUSE_VOICE_PRESET, 'Sulafat');
+  assert.equal(resolveMuseVoicePreset(undefined), 'Sulafat');
+  assert.equal(resolveMuseVoicePreset('sulafat'), 'Sulafat');
+  assert.equal(resolveMuseVoicePreset('Kore'), 'Kore');
+  assert.equal(resolveMuseVoicePreset('UnknownVoice'), 'Sulafat');
+});
+
+test('pickPreferredSpeechVoice prioritizes en-IN female voice for English and BCP-47 for Indian languages', () => {
+  const voices = [
+    { name: 'Google US English', lang: 'en-US' },
+    { name: 'Microsoft Ravi - English (India)', lang: 'en-IN' },
+    { name: 'Microsoft Heera - English (India) Female', lang: 'en-IN' },
+    { name: 'Google हिन्दी', lang: 'hi-IN' },
+    { name: 'Google తెలుగు', lang: 'te-IN' },
+  ];
+  assert.equal(pickPreferredSpeechVoice(voices, 'English')?.name, 'Microsoft Heera - English (India) Female');
+  assert.equal(pickPreferredSpeechVoice(voices, 'Telugu')?.lang, 'te-IN');
+  assert.equal(pickPreferredSpeechVoice(voices, 'Hindi')?.lang, 'hi-IN');
+});
+
+test('extractCompleteSpeechSentences splits sentences while preserving decimals and streaming remainder', () => {
+  const res = extractCompleteSpeechSentences(
+    '**Gravity** accelerates objects at 9.8 m/s². Force equals mass times acceleration! What next? Incomplete tail'
+  );
+  assert.deepEqual(res.sentences, [
+    'Gravity accelerates objects at 9.8 m/s².',
+    'Force equals mass times acceleration!',
+    'What next?',
+  ]);
+  assert.equal(res.remainder.trim(), 'Incomplete tail');
+
+  const singleIncomplete = extractCompleteSpeechSentences('Wait for the period');
+  assert.deepEqual(singleIncomplete.sentences, []);
+  assert.equal(singleIncomplete.remainder, 'Wait for the period');
 });

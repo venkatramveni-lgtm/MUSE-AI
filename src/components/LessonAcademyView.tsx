@@ -3,6 +3,7 @@ import {
   Bookmark,
   BookOpen,
   Box,
+  Calendar,
   CheckCircle2,
   CloudOff,
   Download,
@@ -10,10 +11,12 @@ import {
   HardDriveDownload,
   Search,
   Sparkles,
+  Video,
 } from 'lucide-react';
 import { BOARDS, CLASS_LEVELS, LANGUAGES } from '../data/curriculumSeed';
 import { LearningProgress, LessonItem, UserProfile } from '../types/muse';
 import { filterMyLessons, LessonCollectionFilter } from '../utils/offlineCache';
+import { filterByStudentClass, prioritizeByClassAndProfile } from '../utils/curriculumFilter';
 import { XRSpatialLab } from './XRSpatialLab';
 
 interface LessonAcademyViewProps {
@@ -30,6 +33,8 @@ interface LessonAcademyViewProps {
   onToggleOfflineLesson: (lesson: LessonItem) => void;
   onSyncOfflineCache?: () => Promise<void> | void;
   onAskAITeacher: (subject?: string) => void;
+  onScheduleLesson?: (lesson: LessonItem) => void;
+  onFindVideos?: (lesson: LessonItem) => void;
 }
 
 const LessonSvgDiagram: React.FC<{ type: LessonItem['diagramType'] }> = ({ type }) => {
@@ -62,6 +67,20 @@ const LessonSvgDiagram: React.FC<{ type: LessonItem['diagramType'] }> = ({ type 
       </svg>
     );
   }
+  if (type === 'motion') {
+    return (
+      <svg viewBox="0 0 420 170" className="w-full max-w-lg mx-auto" role="img" aria-label="Newton laws of motion and acceleration diagram">
+        <rect x="0" y="0" width="420" height="170" rx="14" fill="#0f172a" />
+        <polygon points="65,135 280,135 65,55" fill="#1e3a8a" fillOpacity="0.45" stroke="#60a5fa" strokeWidth="2" />
+        <rect x="135" y="72" width="44" height="28" rx="5" transform="rotate(20 135 72)" fill="#38bdf8" stroke="#e0f2fe" strokeWidth="1.5" />
+        <path d="M190 92 L285 126" stroke="#f59e0b" strokeWidth="3" />
+        <text x="292" y="130" fill="#fde68a" fontSize="11" fontWeight="bold">F = m × a</text>
+        <text x="290" y="55" fill="#93c5fd" fontSize="11">v = u + at</text>
+        <text x="290" y="75" fill="#6ee7b7" fontSize="11">s = ut + ½at²</text>
+        <text x="290" y="95" fill="#c4b5fd" fontSize="11">v² - u² = 2as</text>
+      </svg>
+    );
+  }
   return (
     <svg viewBox="0 0 420 150" className="w-full max-w-lg mx-auto" role="img" aria-label="Concept flow diagram">
       <rect x="0" y="0" width="420" height="150" rx="14" fill="#0f172a" />
@@ -91,8 +110,11 @@ export const LessonAcademyView: React.FC<LessonAcademyViewProps> = ({
   onToggleOfflineLesson,
   onSyncOfflineCache,
   onAskAITeacher,
+  onScheduleLesson,
+  onFindVideos,
 }) => {
   const [boardFilter, setBoardFilter] = useState<string>('ALL');
+  const [myClassOnly, setMyClassOnly] = useState<boolean>(!initialLessonId);
   const [classFilter, setClassFilter] = useState<string>('ALL');
   const [subjectFilter, setSubjectFilter] = useState<string>('ALL');
   const [language, setLanguage] = useState<string>(profile.preferredLanguage || 'English');
@@ -101,7 +123,11 @@ export const LessonAcademyView: React.FC<LessonAcademyViewProps> = ({
     useState<LessonCollectionFilter>(initialCollectionFilter);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [selectedLessonId, setSelectedLessonId] = useState<string>(
-    initialLessonId || lessons[0]?.id || ''
+    () =>
+      initialLessonId ||
+      prioritizeByClassAndProfile(lessons, profile)[0]?.id ||
+      lessons[0]?.id ||
+      ''
   );
   const [activeTab, setActiveTab] = useState<'lesson' | 'spatial'>('lesson');
 
@@ -125,7 +151,13 @@ export const LessonAcademyView: React.FC<LessonAcademyViewProps> = ({
   const filteredLessons = useMemo(() => {
     const q = search.trim().toLowerCase();
     const byCollection = filterMyLessons(lessons, progress, offlineLessonIds, collectionFilter);
-    return byCollection.filter((l) => {
+    const prioritized = prioritizeByClassAndProfile(byCollection, profile);
+    const classScoped =
+      classFilter === 'ALL'
+        ? filterByStudentClass(prioritized, profile.classLevel, myClassOnly)
+        : prioritized;
+
+    return classScoped.filter((l) => {
       if (boardFilter !== 'ALL' && l.board !== boardFilter) return false;
       if (classFilter !== 'ALL' && l.classLevel !== Number(classFilter)) return false;
       if (subjectFilter !== 'ALL' && l.subject !== subjectFilter) return false;
@@ -140,6 +172,8 @@ export const LessonAcademyView: React.FC<LessonAcademyViewProps> = ({
     progress,
     offlineLessonIds,
     collectionFilter,
+    profile,
+    myClassOnly,
     boardFilter,
     classFilter,
     subjectFilter,
@@ -147,12 +181,15 @@ export const LessonAcademyView: React.FC<LessonAcademyViewProps> = ({
   ]);
 
   const activeLesson =
-    lessons.find((l) => l.id === selectedLessonId) || filteredLessons[0] || lessons[0];
+    filteredLessons.find((l) => l.id === selectedLessonId) ||
+    filteredLessons[0] ||
+    lessons.find((l) => l.id === selectedLessonId) ||
+    lessons[0];
   const activeProg = activeLesson ? progressMap.get(activeLesson.id) : undefined;
 
   const downloadNotes = (lesson: LessonItem) => {
     const text = [
-      `MUSE AI — STUDY NOTES (${lesson.isSampleContent ? 'SAMPLE CONTENT' : 'CURRICULUM'})`,
+      `NANO AI — STUDY NOTES (${lesson.isSampleContent ? 'SAMPLE CONTENT' : 'CURRICULUM'})`,
       `Hierarchy: ${lesson.board} -> Class ${lesson.classLevel} -> ${lesson.subject} -> ${lesson.chapter} -> ${lesson.topic}`,
       `Title: ${lesson.title}`,
       `Language Preference: ${language}`,
@@ -194,9 +231,26 @@ export const LessonAcademyView: React.FC<LessonAcademyViewProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => setCollectionFilter('all')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold border ${
-                collectionFilter === 'all'
+              onClick={() => {
+                setMyClassOnly((m) => !m);
+                setClassFilter('ALL');
+              }}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 ${
+                myClassOnly && classFilter === 'ALL'
+                  ? 'bg-purple-600 text-white border-purple-500'
+                  : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)]'
+              }`}
+            >
+              My Class ({profile.classLevel})
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCollectionFilter('all');
+                setMyClassOnly(false);
+              }}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 ${
+                collectionFilter === 'all' && !myClassOnly
                   ? 'bg-blue-600 text-white border-blue-500'
                   : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)]'
               }`}
@@ -295,10 +349,13 @@ export const LessonAcademyView: React.FC<LessonAcademyViewProps> = ({
           <select
             aria-label="Filter by Class"
             value={classFilter}
-            onChange={(e) => setClassFilter(e.target.value)}
+            onChange={(e) => {
+              setClassFilter(e.target.value);
+              if (e.target.value !== 'ALL') setMyClassOnly(false);
+            }}
             className="px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
           >
-            <option value="ALL">All Classes (1–10)</option>
+            <option value="ALL">All Classes (1–12)</option>
             {CLASS_LEVELS.map((c) => (
               <option key={c} value={c}>Class {c}</option>
             ))}
@@ -465,7 +522,7 @@ export const LessonAcademyView: React.FC<LessonAcademyViewProps> = ({
                 )}
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={() => downloadNotes(activeLesson)}
@@ -474,6 +531,26 @@ export const LessonAcademyView: React.FC<LessonAcademyViewProps> = ({
                   <Download className="w-3.5 h-3.5" />
                   Download Study Notes
                 </button>
+                {onScheduleLesson && (
+                  <button
+                    type="button"
+                    onClick={() => onScheduleLesson(activeLesson)}
+                    className="px-3 py-2 rounded-xl text-xs font-medium bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-emerald-500/40 flex items-center gap-1.5"
+                  >
+                    <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+                    Schedule in Planner
+                  </button>
+                )}
+                {onFindVideos && (
+                  <button
+                    type="button"
+                    onClick={() => onFindVideos(activeLesson)}
+                    className="px-3 py-2 rounded-xl text-xs font-medium bg-[var(--bg-elevated)] border border-[var(--border-subtle)] hover:border-sky-500/40 flex items-center gap-1.5"
+                  >
+                    <Video className="w-3.5 h-3.5 text-sky-400" />
+                    Matching Videos
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onAskAITeacher(activeLesson.subject)}
@@ -491,7 +568,7 @@ export const LessonAcademyView: React.FC<LessonAcademyViewProps> = ({
               <div className="space-y-5 text-sm">
                 {language !== 'English' && (
                   <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/30 text-xs text-blue-300">
-                    Preferred Language set to <strong>{language}</strong>. Sample lesson text is currently authored in English; ask Muse AI Teacher in {language} for bilingual explanations!
+                    Preferred Language set to <strong>{language}</strong>. Sample lesson text is currently authored in English; ask Nano AI Teacher in {language} for bilingual explanations!
                   </div>
                 )}
 

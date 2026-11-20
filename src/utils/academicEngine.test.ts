@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildQuizTrendChartData,
   computeSubjectProgress,
   detectWeakTopics,
   evaluateAchievements,
@@ -27,7 +28,9 @@ test('gradeAssessment scores MCQ, True/False, Fill-in-blank, Match, and Short An
 });
 
 test('gradeAssessment marks wrong or blank answers as incorrect without leaking full credit', () => {
-  const mathQuestions = SAMPLE_QUESTIONS.filter((q) => q.subject === 'Mathematics');
+  const mathQuestions = SAMPLE_QUESTIONS.filter(
+    (q) => q.id === 'q_math_1' || q.id === 'q_math_2'
+  );
   const graded = gradeAssessment(mathQuestions, {
     q_math_1: '12 cm',
     q_math_2: '',
@@ -154,4 +157,72 @@ test('validateAcademicInputSafety blocks prompt injection and empty prompts whil
 
 test('sanitizeId produces blueprint-compliant Firestore document IDs', () => {
   assert.equal(sanitizeId('lesson/123?abc!'), 'lesson_123_abc_');
+});
+
+test('buildQuizTrendChartData sorts chronologically, computes running average, and respects limit', () => {
+  assert.deepEqual(buildQuizTrendChartData([]), []);
+
+  const attempts: QuizAttempt[] = [
+    {
+      id: 'att_late',
+      uid: 'u1',
+      assessmentId: 'a3',
+      assessmentTitle: 'Third Quiz',
+      mode: 'weekly_test',
+      subject: 'Science',
+      score: 5,
+      total: 5,
+      percentage: 100,
+      results: [],
+      status: 'submitted',
+      submittedAt: '2026-11-16T10:00:00Z',
+    },
+    {
+      id: 'att_early',
+      uid: 'u1',
+      assessmentId: 'a1',
+      assessmentTitle: 'First Quiz',
+      mode: 'daily_quiz',
+      subject: 'Mathematics',
+      score: 2,
+      total: 5,
+      percentage: 40,
+      results: [],
+      status: 'submitted',
+      submittedAt: '2026-11-14T10:00:00Z',
+    },
+    {
+      id: 'att_mid',
+      uid: 'u1',
+      assessmentId: 'a2',
+      assessmentTitle: 'Second Quiz',
+      mode: 'practice',
+      subject: 'English',
+      score: 4,
+      total: 5,
+      percentage: 80,
+      results: [],
+      status: 'submitted',
+      submittedAt: '2026-11-15T10:00:00Z',
+    },
+  ];
+
+  const points = buildQuizTrendChartData(attempts, 10);
+  assert.equal(points.length, 3);
+  assert.equal(points[0].id, 'att_early');
+  assert.equal(points[0].percentage, 40);
+  assert.equal(points[0].cumulativeAvg, 40);
+
+  assert.equal(points[1].id, 'att_mid');
+  assert.equal(points[1].percentage, 80);
+  assert.equal(points[1].cumulativeAvg, 60);
+
+  assert.equal(points[2].id, 'att_late');
+  assert.equal(points[2].percentage, 100);
+  assert.equal(points[2].cumulativeAvg, 73);
+
+  const limited = buildQuizTrendChartData(attempts, 2);
+  assert.equal(limited.length, 2);
+  assert.equal(limited[0].id, 'att_mid');
+  assert.equal(limited[1].id, 'att_late');
 });

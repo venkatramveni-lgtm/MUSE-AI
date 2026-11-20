@@ -4,10 +4,12 @@ import {
   Award,
   BookOpen,
   Bot,
+  Box,
   Calendar,
   CheckCircle2,
   ClipboardCheck,
   Flame,
+  Globe,
   GraduationCap,
   Image as ImageIcon,
   Layers,
@@ -29,6 +31,10 @@ import {
   detectWeakTopics,
   evaluateAchievements,
 } from '../utils/academicEngine';
+import {
+  getClassDashboardBlueprint,
+  prioritizeByClassAndProfile,
+} from '../utils/curriculumFilter';
 import { formatIsoDate, sortTasksByPriorityAndTime } from '../utils/plannerUtils';
 
 interface StudentDashboardProps {
@@ -63,6 +69,20 @@ const OLD_DASHBOARD_MODULES: {
   icon: React.ComponentType<{ className?: string }>;
   accent: string;
 }[] = [
+  {
+    id: 'guides',
+    title: 'Guides & Study Pack',
+    desc: 'DIKSHA, PM eVIDYA, @WORKBOOKGURUJI & saved video links',
+    icon: Globe,
+    accent: 'text-teal-400',
+  },
+  {
+    id: 'viewer_3d',
+    title: '3D Viewer Lab',
+    desc: 'Interactive 3D physics, cells, atoms & solar system',
+    icon: Box,
+    accent: 'text-purple-400',
+  },
   {
     id: 'education_hub',
     title: 'Education Hub (Cl 1–12)',
@@ -166,16 +186,19 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     completedStudyTasks: completedTasksCount,
   });
 
-  const nextLesson =
-    workspace.lessons.find(
-      (l) =>
-        l.board === profile.board &&
-        !workspace.progress.some((p) => p.lessonId === l.id && p.completed)
-    ) || workspace.lessons[0];
+  const classBlueprint = getClassDashboardBlueprint(profile.classLevel);
+  const prioritizedLessons = prioritizeByClassAndProfile(workspace.lessons, profile);
+  const prioritizedVideos = prioritizeByClassAndProfile(workspace.videos, profile);
+  const prioritizedImages = prioritizeByClassAndProfile(workspace.images, profile);
 
-  const featuredLessons = workspace.lessons.slice(0, 3);
-  const featuredVideos = workspace.videos.slice(0, 3);
-  const featuredImages = workspace.images.slice(0, 3);
+  const nextLesson =
+    prioritizedLessons.find(
+      (l) => !workspace.progress.some((p) => p.lessonId === l.id && p.completed)
+    ) || prioritizedLessons[0];
+
+  const featuredLessons = prioritizedLessons.slice(0, 3);
+  const featuredVideos = prioritizedVideos.slice(0, 3);
+  const featuredImages = prioritizedImages.slice(0, 3);
 
   const recentConversations = workspace.conversations.slice(0, 3);
   const taskCompletionPct =
@@ -196,19 +219,19 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* MUSE AI Welcome & Prominent AI Search Hero */}
+      {/* NANO AI Welcome & Prominent AI Search Hero */}
       <section className="muse-gradient-hero text-white rounded-2xl p-6 sm:p-8 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1.5">
             <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-blue-200">
               <Sparkles className="w-3.5 h-3.5" />
-              <span>MUSE AI · Think Smarter. Learn Faster. Do More.</span>
+              <span>Nano AI · Learn Beyond Limits · {classBlueprint.headlineTag}</span>
             </div>
             <h1 className="font-display text-2xl sm:text-3xl font-bold">
               Welcome back, {profile.displayName}
             </h1>
             <p className="text-sm text-slate-200 max-w-2xl">
-              {profile.board} · Class {profile.classLevel} · {profile.preferredLanguage} · Goal: {profile.academicGoal}
+              {profile.board} · Class {profile.classLevel} ({classBlueprint.stageLabel}) · {profile.preferredLanguage} · Subjects: {profile.subjects.join(', ')}
             </p>
           </div>
 
@@ -236,7 +259,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               type="text"
               value={aiQuery}
               onChange={(e) => setAiQuery(e.target.value)}
-              placeholder="Ask Muse AI anything — explain a concept, solve homework, write code, or plan your day..."
+              placeholder={`Ask Nano AI anything for Class ${profile.classLevel} — explain a concept, solve homework, generate study notes, or quiz yourself...`}
               aria-label="Home AI search bar"
               className="w-full bg-transparent py-2 text-sm text-white placeholder:text-slate-400 focus:outline-none"
             />
@@ -261,14 +284,14 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </div>
         </form>
 
-        {/* Quick Action Buttons — MUSE Academies + Core AI Tools */}
+        {/* Quick Action Buttons — Nano AI Academies, Guides & Core AI Tools */}
         <div className="flex flex-wrap items-center gap-2.5">
           <button
             type="button"
             onClick={() => onNavigate('lesson_academy')}
             className="px-3.5 py-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
           >
-            <BookOpen className="w-3.5 h-3.5 text-emerald-300" /> Learning Academy
+            <BookOpen className="w-3.5 h-3.5 text-emerald-300" /> Class {profile.classLevel} Lessons
           </button>
           <button
             type="button"
@@ -286,6 +309,20 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </button>
           <button
             type="button"
+            onClick={() => onNavigate('guides')}
+            className="px-3.5 py-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
+          >
+            <Globe className="w-3.5 h-3.5 text-teal-300" /> Guides &amp; DIKSHA
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('viewer_3d')}
+            className="px-3.5 py-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
+          >
+            <Box className="w-3.5 h-3.5 text-purple-300" /> 3D Viewer
+          </button>
+          <button
+            type="button"
             onClick={() => onNavigate('ai_teacher')}
             className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
           >
@@ -300,13 +337,6 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => onNavigate('education_hub')}
-            className="px-3.5 py-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
-          >
-            <GraduationCap className="w-3.5 h-3.5 text-blue-200" /> Education Hub (Cl 1–12)
-          </button>
-          <button
-            type="button"
             onClick={() => onNavigate('study_planner')}
             className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
           >
@@ -315,13 +345,50 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         </div>
       </section>
 
-      {/* MUSE APP CONTENT FIRST: Featured Learning, Video & Image Academies */}
-      <section aria-label="MUSE App Content First" className="space-y-5">
+      {/* Class-Personalized Blueprint Banner */}
+      <section aria-label="Class Curriculum Spotlight" className="muse-card p-5 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h2 className="font-display font-bold text-lg">MUSE App Content First</h2>
+            <h2 className="font-display font-bold text-base">
+              Class {profile.classLevel} Quick Launchers · {classBlueprint.headlineTag}
+            </h2>
             <p className="text-xs text-[var(--text-muted)]">
-              Explore MUSE Learning Academy chapters, Video Academy walkthroughs, and Image Academy visual diagrams first.
+              Recommended focus subjects: {classBlueprint.recommendedSubjects.join(', ')}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('viewer_3d')}
+            className="px-3.5 py-1.5 rounded-xl text-xs font-semibold muse-btn-primary whitespace-nowrap shrink-0 flex items-center gap-1.5"
+          >
+            <Box className="w-3.5 h-3.5" />
+            <span>Open Featured 3D Lab</span>
+          </button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+          {classBlueprint.featuredPrompts.map((prompt) => (
+            <button
+              key={prompt}
+              type="button"
+              onClick={() => onAskPrompt(prompt)}
+              className="text-left muse-panel p-3.5 text-xs hover:border-blue-500/40 transition flex items-start justify-between gap-2"
+            >
+              <span className="text-[var(--text-primary)] font-medium line-clamp-2">{prompt}</span>
+              <ArrowRight className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* NANO AI CLASS-FIRST CONTENT: Featured Learning, Video & Image Academies */}
+      <section aria-label="Nano AI Class Content" className="space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="font-display font-bold text-lg">
+              Class {profile.classLevel} Curated Lessons, Videos &amp; Visuals
+            </h2>
+            <p className="text-xs text-[var(--text-muted)]">
+              Prioritized automatically for Class {profile.classLevel} ({profile.board}) and your selected subjects.
             </p>
           </div>
           <button
@@ -515,9 +582,9 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         <div className="muse-card p-5 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="font-display font-bold text-base">
-              All MUSE Academies &amp; Study Centres
+              All Nano AI Academies, Guides &amp; Study Centres
             </h3>
-            <span className="text-xs text-[var(--text-muted)]">Direct access to every classic dashboard module</span>
+            <span className="text-xs text-[var(--text-muted)]">Direct access to every learning module</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {OLD_DASHBOARD_MODULES.map((mod) => (

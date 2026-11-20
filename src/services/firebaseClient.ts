@@ -100,8 +100,29 @@ export async function testFirestoreConnection(): Promise<{ ok: boolean; message?
       console.error('Please check your Firebase configuration.');
       return { ok: false, message: 'Firestore client is offline. Verify Firebase configuration.' };
     }
-    return { ok: true };
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'Unable to reach Firestore server.',
+    };
   }
+}
+
+export async function getFirebaseIdToken(forceRefresh = false): Promise<string | null> {
+  if (!auth.currentUser) return null;
+  try {
+    return await auth.currentUser.getIdToken(forceRefresh);
+  } catch {
+    return null;
+  }
+}
+
+export async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const token = await getFirebaseIdToken();
+  const headers = new Headers(init.headers);
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  return fetch(input, { ...init, headers });
 }
 
 export async function signInWithGooglePopup(): Promise<User> {
@@ -109,13 +130,34 @@ export async function signInWithGooglePopup(): Promise<User> {
   return credential.user;
 }
 
-export async function signUpWithEmail(email: string, password: string, displayName?: string): Promise<User> {
+export interface SignUpResult {
+  user: User;
+  verificationSent: boolean;
+  verificationError?: string;
+}
+
+export async function signUpWithEmail(
+  email: string,
+  password: string,
+  displayName?: string
+): Promise<SignUpResult> {
   const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
   if (displayName && displayName.trim().length >= 2) {
     await updateProfile(credential.user, { displayName: displayName.trim().slice(0, 80) }).catch(() => {});
   }
-  await sendEmailVerification(credential.user).catch(() => {});
-  return credential.user;
+  try {
+    await sendEmailVerification(credential.user);
+    return { user: credential.user, verificationSent: true };
+  } catch (err: unknown) {
+    return {
+      user: credential.user,
+      verificationSent: false,
+      verificationError:
+        err instanceof Error
+          ? err.message
+          : 'Account created, but we could not send the verification email. Try "Resend verification email" after signing in.',
+    };
+  }
 }
 
 export async function signInWithEmail(email: string, password: string): Promise<User> {
@@ -145,3 +187,4 @@ export async function deleteCurrentFirebaseUser(): Promise<void> {
 
 export { onAuthStateChanged };
 export type { User };
+

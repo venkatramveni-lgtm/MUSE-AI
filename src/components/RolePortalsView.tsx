@@ -1,33 +1,52 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Ban,
   BookOpen,
+  Bot,
+  Calendar,
   CheckCircle2,
-  ClipboardPlus,
+  ClipboardCheck,
+  Clock,
   Download,
+  FileText,
   Flag,
   Globe,
+  Image as ImageIcon,
+  Layers,
   ListVideo,
   Plus,
   RefreshCw,
   Shield,
+  Sparkles,
+  Trophy,
   Users,
   Video,
 } from 'lucide-react';
 import { BOARDS, CLASS_LEVELS, CORE_SUBJECTS, LANGUAGES } from '../data/curriculumSeed';
 import {
   ApprovedChannelEntry,
-  AssignmentItem,
   EducationBoard,
   EducationContentReport,
   EducationPlaylistItem,
   EducationVideoItem,
   LessonItem,
-  QuestionItem,
   UserRole,
 } from '../types/muse';
 import { MuseWorkspaceState } from '../services/workspaceStore';
-import { computeSubjectProgress } from '../utils/academicEngine';
+import { authFetch } from '../services/firebaseClient';
+import {
+  computeSubjectProgress,
+  detectWeakTopics,
+  evaluateAchievements,
+} from '../utils/academicEngine';
+import {
+  buildComprehensiveParentReportText,
+  buildParentDailyActivityFeed,
+  buildParentDailyDigest,
+  getTodayDateKey,
+  groupActivitiesByDay,
+  ParentActivityCategory,
+} from '../utils/parentPortalUtils';
 
 /* ---------------- PARENT PORTAL ---------------- */
 export const ParentPortalView: React.FC<{
@@ -36,65 +55,154 @@ export const ParentPortalView: React.FC<{
 }> = ({ workspace, onToggleConsent }) => {
   const activeLink = workspace.parentLinks[0];
   const profile = workspace.profile!;
-  const subjectProgress = computeSubjectProgress(
-    workspace.lessons,
-    workspace.progress,
-    workspace.attempts
+  const todayKey = getTodayDateKey();
+
+  const [dayScope, setDayScope] = useState<'today' | 'last7' | 'all' | 'custom'>('today');
+  const [customDate, setCustomDate] = useState<string>(todayKey);
+  const [categoryFilter, setCategoryFilter] = useState<'all' | ParentActivityCategory>('all');
+  const [portalSection, setPortalSection] = useState<
+    'overview' | 'daily_log' | 'academics' | 'planner' | 'media_ai'
+  >('overview');
+
+  const selectedDateKey = dayScope === 'custom' ? customDate || todayKey : todayKey;
+
+  const subjectProgress = useMemo(
+    () => computeSubjectProgress(workspace.lessons, workspace.progress, workspace.attempts),
+    [workspace.lessons, workspace.progress, workspace.attempts]
   );
 
+  const weakTopics = useMemo(
+    () => detectWeakTopics(workspace.attempts, workspace.questions),
+    [workspace.attempts, workspace.questions]
+  );
+
+  const completedLessonsCount = workspace.progress.filter((p) => p.completed).length;
+  const completedTasksCount = workspace.studyPlans.filter((t) => t.completed).length;
+
+  const achievements = useMemo(
+    () =>
+      evaluateAchievements({
+        completedLessonsCount,
+        attempts: workspace.attempts,
+        studyStreak: profile.studyStreak,
+        completedStudyTasks: completedTasksCount,
+      }),
+    [completedLessonsCount, workspace.attempts, profile.studyStreak, completedTasksCount]
+  );
+
+  const todayDigest = useMemo(
+    () => buildParentDailyDigest(workspace, selectedDateKey),
+    [workspace, selectedDateKey]
+  );
+
+  const fullActivityFeed = useMemo(
+    () => buildParentDailyActivityFeed(workspace),
+    [workspace]
+  );
+
+  const filteredDayGroups = useMemo(() => {
+    const cutoff7 = new Date();
+    cutoff7.setDate(cutoff7.getDate() - 6);
+    const cutoff7Key = getTodayDateKey(cutoff7);
+
+    const matching = fullActivityFeed.filter((item) => {
+      if (categoryFilter !== 'all' && item.category !== categoryFilter) return false;
+      if (dayScope === 'today') return item.dateKey === todayKey;
+      if (dayScope === 'custom') return item.dateKey === (customDate || todayKey);
+      if (dayScope === 'last7') return item.dateKey >= cutoff7Key;
+      return true;
+    });
+
+    return groupActivitiesByDay(matching);
+  }, [fullActivityFeed, categoryFilter, dayScope, todayKey, customDate]);
+
+  const watchedVideos = useMemo(
+    () => workspace.videos.filter((v) => workspace.watchedVideoIds.includes(v.id)),
+    [workspace.videos, workspace.watchedVideoIds]
+  );
+
+  const studiedImages = useMemo(
+    () => workspace.images.filter((img) => workspace.studiedImageIds.includes(img.id)),
+    [workspace.images, workspace.studiedImageIds]
+  );
+
+  const overallQuizAvg =
+    workspace.attempts.length > 0
+      ? Math.round(
+          workspace.attempts.reduce((sum, a) => sum + a.percentage, 0) / workspace.attempts.length
+        )
+      : null;
+
   const downloadParentReport = () => {
-    const lines = [
-      `MUSE AI GUARDIAN PROGRESS REPORT`,
-      `Student: ${profile.displayName} (${profile.board} Class ${profile.classLevel})`,
-      `Guardian Consent: ${activeLink?.consentGranted ? 'Active' : 'Revoked'}`,
-      `Lessons Completed: ${workspace.progress.filter((p) => p.completed).length}`,
-      `Assessments Submitted: ${workspace.attempts.length}`,
-      ...subjectProgress.map((s) => `- ${s.subject}: ${s.lessonPercentage}% lessons`),
-    ].join('\n');
-    const blob = new Blob([lines], { type: 'text/plain;charset=utf-8' });
+    const text = buildComprehensiveParentReportText(workspace, todayKey);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `parent_report_${profile.uid}.txt`;
+    a.download = `nano_ai_parent_report_${profile.uid}_${todayKey}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
+  const categoryBadgeLabel = (cat: ParentActivityCategory) => {
+    switch (cat) {
+      case 'lesson':
+        return 'Lesson';
+      case 'quiz':
+        return 'Quiz/Test';
+      case 'planner':
+        return 'Planner';
+      case 'assignment':
+        return 'Assignment';
+      case 'note':
+        return 'Note';
+      case 'ai_session':
+        return 'AI Session';
+      case 'visual':
+        return 'Visual/Image';
+      case 'guide':
+        return 'Guide Link';
+    }
+  };
+
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="muse-card p-5 flex flex-wrap items-center justify-between gap-4">
-        <div>
+        <div className="space-y-1">
           <div className="text-xs font-semibold uppercase tracking-wider text-blue-400">
-            Parent & Guardian Portal
+            Nano AI Parent &amp; Guardian Portal • Live Daily Updates ({todayKey})
           </div>
           <h1 className="font-display font-bold text-xl">
             Linked Student: {activeLink?.studentDisplayName || profile.displayName}
           </h1>
           <p className="text-xs text-[var(--text-muted)]">
-            Access restricted strictly to authorized parent-student links with explicit guardian consent.
+            Class {profile.classLevel} • {profile.board} • Language: {profile.preferredLanguage} • Goal: {profile.academicGoal}
           </p>
         </div>
         <button
           type="button"
           onClick={downloadParentReport}
-          className="px-4 py-2 rounded-xl text-xs font-semibold muse-btn-primary flex items-center gap-1.5"
+          className="px-4 py-2.5 rounded-xl text-xs font-semibold muse-btn-primary flex items-center gap-1.5 whitespace-nowrap shrink-0"
         >
-          <Download className="w-3.5 h-3.5" /> Download Child Report
+          <Download className="w-3.5 h-3.5" /> Download Complete Daily Report
         </button>
       </div>
 
+      {/* Guardian Consent Banner */}
       {activeLink && (
-        <div className="muse-card p-5 flex flex-wrap items-center justify-between gap-3">
+        <div className="muse-card p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="font-display font-bold text-base">Privacy & Guardian Consent</h2>
+            <h2 className="font-display font-bold text-base">Privacy &amp; Guardian Consent</h2>
             <p className="text-xs text-[var(--text-muted)]">
-              Current Link Status: <strong>{activeLink.status}</strong> • Consent: <strong>{activeLink.consentGranted ? 'Granted' : 'Paused'}</strong>
+              Current Link Status: <strong>{activeLink.status}</strong> • Consent:{' '}
+              <strong>{activeLink.consentGranted ? 'Granted' : 'Paused'}</strong>
             </p>
           </div>
           <button
             type="button"
             onClick={() => onToggleConsent(activeLink.id)}
-            className="px-4 py-2 rounded-xl text-xs font-semibold bg-[var(--bg-elevated)] border border-[var(--border-subtle)]"
+            className="px-4 py-2 rounded-xl text-xs font-semibold bg-[var(--bg-elevated)] border border-[var(--border-subtle)] whitespace-nowrap shrink-0"
           >
             {activeLink.consentGranted ? 'Pause Access Consent' : 'Grant Access Consent'}
           </button>
@@ -106,322 +214,545 @@ export const ParentPortalView: React.FC<{
           Student academic details are hidden while guardian link consent is paused.
         </div>
       ) : (
-        <div className="grid lg:grid-cols-2 gap-5">
-          <div className="muse-card p-5 space-y-3">
-            <h2 className="font-display font-bold text-base">Subject Academic Progress</h2>
-            {subjectProgress.map((s) => (
-              <div key={s.subject} className="muse-panel p-3 flex items-center justify-between text-xs">
-                <span className="font-semibold">{s.subject}</span>
-                <span>
-                  {s.completedLessons}/{s.totalLessons} lessons •{' '}
-                  {s.averageQuizScore !== null ? `${s.averageQuizScore}% quiz avg` : 'No quiz yet'}
-                </span>
+        <>
+          {/* Today's Daily Report Card (updates automatically every day) */}
+          <div className="muse-card p-5 space-y-4 border border-blue-500/30">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5" /> What Was Done Today ({selectedDateKey})
+                </div>
+                <p className="text-sm font-semibold text-[var(--text-primary)] mt-1">
+                  {todayDigest.headlineSummary}
+                </p>
               </div>
+              <div className="text-xs font-semibold text-[var(--text-muted)]">
+                Streak:{' '}
+                <strong className="text-amber-400">
+                  {profile.studyStreak} {profile.studyStreak === 1 ? 'day' : 'days'}
+                </strong>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
+              <div className="muse-panel p-3">
+                <div className="text-[var(--text-muted)]">Lessons Done Today</div>
+                <div className="font-display text-xl font-bold mt-1 text-emerald-400">
+                  {todayDigest.lessonsCompleted}
+                </div>
+                <div className="text-[11px] text-[var(--text-muted)]">
+                  {todayDigest.lessonsStudied} studied ({completedLessonsCount} total)
+                </div>
+              </div>
+              <div className="muse-panel p-3">
+                <div className="text-[var(--text-muted)]">Quizzes Today</div>
+                <div className="font-display text-xl font-bold mt-1 text-blue-400">
+                  {todayDigest.quizzesTaken}
+                </div>
+                <div className="text-[11px] text-[var(--text-muted)]">
+                  {todayDigest.averageQuizPercentage !== null
+                    ? `${todayDigest.averageQuizPercentage}% today avg`
+                    : overallQuizAvg !== null
+                      ? `${overallQuizAvg}% overall avg`
+                      : 'None today'}
+                </div>
+              </div>
+              <div className="muse-panel p-3">
+                <div className="text-[var(--text-muted)]">Planner Tasks</div>
+                <div className="font-display text-xl font-bold mt-1 text-purple-400">
+                  {todayDigest.tasksCompleted}/{todayDigest.tasksScheduledTotal}
+                </div>
+                <div className="text-[11px] text-[var(--text-muted)]">
+                  {completedTasksCount}/{workspace.studyPlans.length} all-time done
+                </div>
+              </div>
+              <div className="muse-panel p-3">
+                <div className="text-[var(--text-muted)]">Homework &amp; Notes</div>
+                <div className="font-display text-xl font-bold mt-1 text-amber-400">
+                  {todayDigest.assignmentsSubmitted + todayDigest.notesSaved}
+                </div>
+                <div className="text-[11px] text-[var(--text-muted)]">
+                  {workspace.submissions.length} submissions • {workspace.savedNotes.length} notes
+                </div>
+              </div>
+              <div className="muse-panel p-3">
+                <div className="text-[var(--text-muted)]">AI &amp; Guides Today</div>
+                <div className="font-display text-xl font-bold mt-1 text-cyan-400">
+                  {todayDigest.aiSessionsActive + todayDigest.guidesSaved}
+                </div>
+                <div className="text-[11px] text-[var(--text-muted)]">
+                  {workspace.conversations.length} AI chats • {workspace.savedGuideLinks.length} guides
+                </div>
+              </div>
+              <div className="muse-panel p-3">
+                <div className="text-[var(--text-muted)]">Videos &amp; Visuals</div>
+                <div className="font-display text-xl font-bold mt-1 text-rose-400">
+                  {workspace.watchedVideoIds.length + workspace.studiedImageIds.length + workspace.generatedVisuals.length}
+                </div>
+                <div className="text-[11px] text-[var(--text-muted)]">
+                  {workspace.watchedVideoIds.length} videos • {workspace.studiedImageIds.length + workspace.generatedVisuals.length} visuals
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Section Switcher */}
+          <div className="flex flex-wrap gap-2">
+            {[
+              { id: 'overview', label: 'Complete Overview' },
+              { id: 'daily_log', label: `Every Day Activity Log (${fullActivityFeed.length})` },
+              { id: 'academics', label: 'Subjects, Quizzes & Weak Topics' },
+              { id: 'planner', label: 'Planner & Assignments' },
+              { id: 'media_ai', label: 'Videos, Notes, Visuals & AI History' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() =>
+                  setPortalSection(
+                    tab.id as 'overview' | 'daily_log' | 'academics' | 'planner' | 'media_ai'
+                  )
+                }
+                className={`px-3.5 py-2 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 ${
+                  portalSection === tab.id
+                    ? 'muse-btn-primary border-transparent'
+                    : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                }`}
+              >
+                {tab.label}
+              </button>
             ))}
           </div>
 
-          <div className="muse-card p-5 space-y-3">
-            <h2 className="font-display font-bold text-base">Assignment & Exam Status</h2>
-            <div className="space-y-2">
-              {workspace.assignments.map((a) => {
-                const sub = workspace.submissions.find((s) => s.assignmentId === a.id);
-                return (
-                  <div key={a.id} className="muse-panel p-3 flex items-center justify-between text-xs">
-                    <div>
-                      <div className="font-semibold">{a.title}</div>
-                      <div className="text-[var(--text-muted)]">Due {a.dueDate}</div>
+          {/* EVERY DAY ACTIVITY LOG */}
+          {(portalSection === 'overview' || portalSection === 'daily_log') && (
+            <section className="muse-card p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-display font-bold text-base flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-blue-400" />
+                    <span>Day-by-Day Activity Log (Every Day What Was Done)</span>
+                  </h2>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Automatically records every lesson, quiz score, planner task, assignment, note, visual, guide link, and AI study session by date.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {(
+                    [
+                      { id: 'today', label: 'Today' },
+                      { id: 'last7', label: 'Last 7 Days' },
+                      { id: 'all', label: 'All Days' },
+                      { id: 'custom', label: 'Pick Date' },
+                    ] as const
+                  ).map((scope) => (
+                    <button
+                      key={scope.id}
+                      type="button"
+                      onClick={() => setDayScope(scope.id)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 ${
+                        dayScope === scope.id
+                          ? 'bg-blue-600 text-white border-blue-500'
+                          : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)]'
+                      }`}
+                    >
+                      {scope.label}
+                    </button>
+                  ))}
+                  {dayScope === 'custom' && (
+                    <input
+                      type="date"
+                      aria-label="Filter parent activity by date"
+                      value={customDate}
+                      onChange={(e) => setCustomDate(e.target.value)}
+                      className="px-2.5 py-1.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
+                    />
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-1.5">
+                {(
+                  [
+                    'all',
+                    'lesson',
+                    'quiz',
+                    'planner',
+                    'assignment',
+                    'note',
+                    'ai_session',
+                    'visual',
+                    'guide',
+                  ] as const
+                ).map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setCategoryFilter(cat)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border whitespace-nowrap shrink-0 ${
+                      categoryFilter === cat
+                        ? 'bg-emerald-600 text-white border-emerald-500'
+                        : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                    }`}
+                  >
+                    {cat === 'all' ? 'All Activities' : categoryBadgeLabel(cat)}
+                  </button>
+                ))}
+              </div>
+
+              {filteredDayGroups.length === 0 ? (
+                <div className="muse-panel p-4 text-xs text-[var(--text-muted)]">
+                  No matching learning activity found for this date filter. Switch to{' '}
+                  <button
+                    type="button"
+                    onClick={() => setDayScope('all')}
+                    className="text-blue-400 font-semibold underline"
+                  >
+                    All Days
+                  </button>{' '}
+                  to inspect full history.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {filteredDayGroups.map((group) => (
+                    <div key={group.dateKey} className="muse-panel p-4 space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-2">
+                        <div className="font-display font-bold text-sm text-[var(--text-primary)]">
+                          {group.dateKey === todayKey ? `Today — ${group.dateKey}` : group.dateKey}
+                        </div>
+                        <div className="text-[11px] text-[var(--text-muted)]">
+                          {group.entries.length} activity item{group.entries.length === 1 ? '' : 's'} •{' '}
+                          {group.completedCount} completed/logged
+                        </div>
+                      </div>
+                      <ul className="space-y-2">
+                        {group.entries.map((entry) => (
+                          <li
+                            key={entry.id}
+                            className="p-2.5 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2 text-xs"
+                          >
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">
+                                  {categoryBadgeLabel(entry.category)}
+                                </span>
+                                {entry.subject && (
+                                  <span className="text-[10px] font-semibold text-teal-400">
+                                    • {entry.subject}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="font-semibold text-[var(--text-primary)]">
+                                {entry.title}
+                              </div>
+                              <div className="text-[11px] text-[var(--text-muted)]">{entry.detail}</div>
+                            </div>
+                            <span className="text-[11px] font-semibold text-emerald-400 shrink-0">
+                              {entry.statusLabel}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                    <span className={sub ? 'text-[var(--accent-emerald)] font-semibold' : 'text-[var(--accent-amber)] font-semibold'}>
-                      {sub ? sub.status : 'Pending'}
-                    </span>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* SUBJECTS, QUIZZES & WEAK TOPICS */}
+          {(portalSection === 'overview' || portalSection === 'academics') && (
+            <div className="grid lg:grid-cols-2 gap-5">
+              <div className="muse-card p-5 space-y-3">
+                <h2 className="font-display font-bold text-base flex items-center gap-2">
+                  <BookOpen className="w-4 h-4 text-emerald-400" />
+                  <span>Subject Academic Progress</span>
+                </h2>
+                {subjectProgress.map((s) => (
+                  <div key={s.subject} className="muse-panel p-3 space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold">{s.subject}</span>
+                      <span>
+                        {s.completedLessons}/{s.totalLessons} lessons ({s.lessonPercentage}%) •{' '}
+                        {s.averageQuizScore !== null ? `${s.averageQuizScore}% quiz avg` : 'No quiz yet'}
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-[var(--bg-surface)] overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-500 rounded-full"
+                        style={{ width: `${Math.min(100, s.lessonPercentage)}%` }}
+                      />
+                    </div>
                   </div>
-                );
-              })}
+                ))}
+              </div>
+
+              <div className="muse-card p-5 space-y-4">
+                <div>
+                  <h2 className="font-display font-bold text-base flex items-center gap-2">
+                    <ClipboardCheck className="w-4 h-4 text-blue-400" />
+                    <span>All Quiz &amp; Exam Attempts ({workspace.attempts.length})</span>
+                  </h2>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Every submitted Daily Quiz, Weekly Test, and Adaptive Practice session.
+                  </p>
+                </div>
+                {workspace.attempts.length === 0 ? (
+                  <p className="text-xs text-[var(--text-muted)]">No quiz attempts submitted yet.</p>
+                ) : (
+                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                    {workspace.attempts
+                      .slice()
+                      .reverse()
+                      .map((att) => (
+                        <div
+                          key={att.id}
+                          className="muse-panel p-3 flex items-center justify-between gap-2 text-xs"
+                        >
+                          <div>
+                            <div className="font-semibold">{att.assessmentTitle}</div>
+                            <div className="text-[11px] text-[var(--text-muted)]">
+                              {att.subject} • {att.submittedAt.slice(0, 10)}
+                            </div>
+                          </div>
+                          <span
+                            className={`font-bold ${
+                              att.percentage >= 75 ? 'text-emerald-400' : 'text-amber-400'
+                            }`}
+                          >
+                            {att.score}/{att.total} ({att.percentage}%)
+                          </span>
+                        </div>
+                      ))}
+                  </div>
+                )}
+
+                <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2">
+                  <h3 className="font-display font-bold text-sm">Focus Topics for Home Revision</h3>
+                  {weakTopics.length === 0 ? (
+                    <p className="text-xs text-[var(--text-muted)]">
+                      Weak topics will appear automatically as quizzes are graded.
+                    </p>
+                  ) : (
+                    weakTopics.slice(0, 4).map((wt) => (
+                      <div
+                        key={wt.topic}
+                        className="muse-panel p-2.5 flex items-center justify-between text-xs"
+                      >
+                        <span>
+                          <strong>{wt.topic}</strong> ({wt.subject})
+                        </span>
+                        <span className="font-semibold text-amber-400">{wt.accuracy}% accuracy</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          )}
+
+          {/* PLANNER & ASSIGNMENTS */}
+          {(portalSection === 'overview' || portalSection === 'planner') && (
+            <div className="grid lg:grid-cols-2 gap-5">
+              <div className="muse-card p-5 space-y-3">
+                <h2 className="font-display font-bold text-base flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-purple-400" />
+                  <span>Study Planner Tasks ({completedTasksCount}/{workspace.studyPlans.length} Done)</span>
+                </h2>
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {workspace.studyPlans.map((task) => (
+                    <div
+                      key={task.id}
+                      className="muse-panel p-3 flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{task.title}</div>
+                        <div className="text-[11px] text-[var(--text-muted)]">
+                          {task.subject} • {task.scheduledDate} {task.scheduledTime || ''} • {task.priority} priority
+                        </div>
+                      </div>
+                      <span
+                        className={`font-semibold shrink-0 ${
+                          task.completed ? 'text-emerald-400' : 'text-amber-400'
+                        }`}
+                      >
+                        {task.completed ? 'Completed' : 'Pending'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="muse-card p-5 space-y-3">
+                <h2 className="font-display font-bold text-base flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-amber-400" />
+                  <span>Assignment &amp; Homework Status ({workspace.assignments.length})</span>
+                </h2>
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {workspace.assignments.map((a) => {
+                    const sub = workspace.submissions.find((s) => s.assignmentId === a.id);
+                    return (
+                      <div key={a.id} className="muse-panel p-3 space-y-1 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold">{a.title}</span>
+                          <span
+                            className={
+                              sub
+                                ? 'text-[var(--accent-emerald)] font-semibold'
+                                : 'text-[var(--accent-amber)] font-semibold'
+                            }
+                          >
+                            {sub ? (sub.grade ? `${sub.status} (${sub.grade})` : sub.status) : 'Pending'}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-[var(--text-muted)]">
+                          Class {a.classLevel} • {a.subject} • Due {a.dueDate}
+                        </div>
+                        {sub && (
+                          <div className="text-[11px] text-[var(--text-secondary)]">
+                            Submitted ({sub.submittedAt.slice(0, 10)}): {sub.content.slice(0, 120)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* VIDEOS, NOTES, VISUALS, GUIDES, AI SESSIONS & ACHIEVEMENTS */}
+          {(portalSection === 'overview' || portalSection === 'media_ai') && (
+            <div className="grid lg:grid-cols-2 gap-5">
+              <div className="muse-card p-5 space-y-4">
+                <div>
+                  <h2 className="font-display font-bold text-base flex items-center gap-2">
+                    <Bot className="w-4 h-4 text-blue-400" />
+                    <span>AI Study Sessions &amp; Saved Notes</span>
+                  </h2>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Recent AI Assistant topics explored and offline study notes saved.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-blue-400">
+                    AI Conversations ({workspace.conversations.length})
+                  </div>
+                  {workspace.conversations.length === 0 ? (
+                    <p className="text-xs text-[var(--text-muted)]">No AI sessions recorded yet.</p>
+                  ) : (
+                    workspace.conversations.slice(0, 5).map((c) => (
+                      <div key={c.id} className="muse-panel p-3 text-xs flex justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-semibold truncate">{c.title}</div>
+                          <div className="text-[11px] text-[var(--text-muted)]">
+                            {c.subject} • {c.messages.length} messages
+                          </div>
+                        </div>
+                        <span className="text-[11px] text-[var(--text-muted)] shrink-0">
+                          {c.updatedAt.slice(0, 10)}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-[var(--border-subtle)]">
+                  <div className="text-xs font-semibold text-emerald-400">
+                    Saved Notes ({workspace.savedNotes.length})
+                  </div>
+                  {workspace.savedNotes.map((n) => (
+                    <div key={n.id} className="muse-panel p-3 text-xs space-y-0.5">
+                      <div className="flex justify-between gap-2 font-semibold">
+                        <span>{n.title}</span>
+                        <span className="text-[11px] text-[var(--text-muted)]">{n.updatedAt.slice(0, 10)}</span>
+                      </div>
+                      <div className="text-[11px] text-[var(--text-muted)] truncate">{n.content}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="muse-card p-5 space-y-4">
+                <div>
+                  <h2 className="font-display font-bold text-base flex items-center gap-2">
+                    <ImageIcon className="w-4 h-4 text-purple-400" />
+                    <span>Videos Watched, Visuals, Guides &amp; Badges</span>
+                  </h2>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Complete media, offline lessons ({workspace.offlineLessonIds.length} ready), saved guide channels, and unlocked milestones.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5 text-xs">
+                  <div className="muse-panel p-3">
+                    <div className="text-[var(--text-muted)]">Videos Watched</div>
+                    <div className="font-bold mt-0.5">{watchedVideos.length} watched</div>
+                    {watchedVideos.slice(0, 2).map((v) => (
+                      <div key={v.id} className="text-[11px] text-blue-400 truncate mt-0.5">
+                        • {v.title}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="muse-panel p-3">
+                    <div className="text-[var(--text-muted)]">Visuals &amp; Diagrams</div>
+                    <div className="font-bold mt-0.5">
+                      {studiedImages.length} studied • {workspace.generatedVisuals.length} created
+                    </div>
+                    {workspace.generatedVisuals.slice(0, 2).map((vis) => (
+                      <div key={vis.id} className="text-[11px] text-purple-400 truncate mt-0.5">
+                        • {vis.title}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="text-xs font-semibold text-teal-400">
+                    Saved Guide Links ({workspace.savedGuideLinks.length})
+                  </div>
+                  {workspace.savedGuideLinks.slice(0, 4).map((gl) => (
+                    <div key={gl.id} className="muse-panel p-2.5 text-xs flex justify-between gap-2">
+                      <span className="truncate font-medium">{gl.title}</span>
+                      <span className="text-[11px] text-[var(--text-muted)] shrink-0">
+                        Class {gl.classLevel} • {gl.channelName}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2">
+                  <div className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                    <Trophy className="w-3.5 h-3.5" /> Achievements &amp; Milestones
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {achievements.map((b) => (
+                      <div
+                        key={b.key}
+                        className={`p-2.5 rounded-xl border text-[11px] ${
+                          b.unlocked
+                            ? 'bg-emerald-500/10 border-emerald-500/35 text-emerald-300'
+                            : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)] text-[var(--text-muted)]'
+                        }`}
+                      >
+                        <div className="font-bold">{b.title}</div>
+                        <div>{b.unlocked ? 'Unlocked' : b.progressLabel}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 };
 
-/* ---------------- TEACHER PORTAL ---------------- */
-export const TeacherPortalView: React.FC<{
-  workspace: MuseWorkspaceState;
-  onCreateAssignment: (a: AssignmentItem) => void;
-  onCreateQuestionAndQuiz: (q: QuestionItem, quizTitle: string) => void;
-  onReviewSubmission: (submissionId: string, feedback: string, grade: string) => void;
-}> = ({ workspace, onCreateAssignment, onCreateQuestionAndQuiz, onReviewSubmission }) => {
-  const profile = workspace.profile!;
-  const [asgnTitle, setAsgnTitle] = useState('');
-  const [asgnDesc, setAsgnDesc] = useState('');
-  const [asgnSubject, setAsgnSubject] = useState('Science');
-  const [asgnBoard, setAsgnBoard] = useState<EducationBoard>('CBSE');
-  const [asgnClass, setAsgnClass] = useState(7);
-  const [asgnDue, setAsgnDue] = useState('2026-11-28');
 
-  const [quizTitle, setQuizTitle] = useState('');
-  const [qPrompt, setQPrompt] = useState('');
-  const [qOptA, setQOptA] = useState('');
-  const [qOptB, setQOptB] = useState('');
-  const [qCorrect, setQCorrect] = useState('A');
-  const [qExpl, setQExpl] = useState('');
-  const [feedbackDraft, setFeedbackDraft] = useState<Record<string, string>>({});
-  const [gradeDraft, setGradeDraft] = useState<Record<string, string>>({});
-  const [notice, setNotice] = useState<string | null>(null);
-
-  const handleCreateAsgn = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (asgnTitle.trim().length < 3 || asgnDesc.trim().length < 5) return;
-    onCreateAssignment({
-      id: `asgn_${Date.now()}`,
-      teacherUid: profile.uid,
-      teacherName: profile.displayName,
-      title: asgnTitle.trim(),
-      description: asgnDesc.trim(),
-      subject: asgnSubject,
-      board: asgnBoard,
-      classLevel: asgnClass,
-      dueDate: asgnDue,
-      createdAt: new Date().toISOString(),
-    });
-    setAsgnTitle('');
-    setAsgnDesc('');
-    setNotice('Assignment published to Assignment Centre.');
-  };
-
-  const handleCreateQuiz = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!quizTitle.trim() || !qPrompt.trim() || !qOptA.trim() || !qOptB.trim()) return;
-    const correctText = qCorrect === 'A' ? qOptA.trim() : qOptB.trim();
-    const newQ: QuestionItem = {
-      id: `q_teacher_${Date.now()}`,
-      board: asgnBoard,
-      classLevel: asgnClass,
-      subject: asgnSubject,
-      chapter: 'Teacher Custom Unit',
-      topic: quizTitle.trim(),
-      type: 'mcq',
-      difficulty: 'medium',
-      prompt: qPrompt.trim(),
-      options: [qOptA.trim(), qOptB.trim()],
-      correctAnswer: correctText,
-      explanation: qExpl.trim() || `Correct option is ${correctText}.`,
-      createdBy: profile.uid,
-    };
-    onCreateQuestionAndQuiz(newQ, quizTitle.trim());
-    setQuizTitle('');
-    setQPrompt('');
-    setQOptA('');
-    setQOptB('');
-    setQExpl('');
-    setNotice('Quiz published to Daily Quiz!');
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="muse-card p-5 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wider text-purple-400">
-            Teacher Portal
-          </div>
-          <h1 className="font-display font-bold text-xl">Class, Quiz & Assignment Management</h1>
-          <p className="text-xs text-[var(--text-muted)]">
-            Create real assignments and quizzes, review student submissions, and track class results.
-          </p>
-        </div>
-        {notice && (
-          <div className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-semibold">
-            {notice}
-          </div>
-        )}
-      </div>
-
-      <div className="grid lg:grid-cols-2 gap-5">
-        <form onSubmit={handleCreateAsgn} className="muse-card p-5 space-y-3">
-          <h2 className="font-display font-bold text-base flex items-center gap-2">
-            <ClipboardPlus className="w-4 h-4 text-blue-400" /> Create Assignment
-          </h2>
-          <input
-            type="text"
-            value={asgnTitle}
-            onChange={(e) => setAsgnTitle(e.target.value)}
-            placeholder="Assignment title..."
-            aria-label="Assignment title"
-            className="w-full px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-          />
-          <textarea
-            rows={2}
-            value={asgnDesc}
-            onChange={(e) => setAsgnDesc(e.target.value)}
-            placeholder="Assignment instructions..."
-            aria-label="Assignment description"
-            className="w-full px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-          />
-          <div className="grid grid-cols-3 gap-2">
-            <select
-              aria-label="Teacher assignment board"
-              value={asgnBoard}
-              onChange={(e) => setAsgnBoard(e.target.value as EducationBoard)}
-              className="px-2 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-            >
-              {BOARDS.map((b) => <option key={b} value={b}>{b}</option>)}
-            </select>
-            <select
-              aria-label="Teacher assignment class"
-              value={asgnClass}
-              onChange={(e) => setAsgnClass(Number(e.target.value))}
-              className="px-2 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-            >
-              {CLASS_LEVELS.map((c) => <option key={c} value={c}>Class {c}</option>)}
-            </select>
-            <select
-              aria-label="Teacher assignment subject"
-              value={asgnSubject}
-              onChange={(e) => setAsgnSubject(e.target.value)}
-              className="px-2 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-            >
-              {CORE_SUBJECTS.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <input
-            type="date"
-            aria-label="Assignment due date"
-            value={asgnDue}
-            onChange={(e) => setAsgnDue(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-          />
-          <button type="submit" className="px-4 py-2 rounded-xl text-xs font-semibold muse-btn-primary">
-            Publish Assignment
-          </button>
-        </form>
-
-        <form onSubmit={handleCreateQuiz} className="muse-card p-5 space-y-3">
-          <h2 className="font-display font-bold text-base flex items-center gap-2">
-            <BookOpen className="w-4 h-4 text-purple-400" /> Quick Quiz Builder
-          </h2>
-          <input
-            type="text"
-            value={quizTitle}
-            onChange={(e) => setQuizTitle(e.target.value)}
-            placeholder="Quiz title (e.g., Force & Motion Check)..."
-            aria-label="Quiz title"
-            className="w-full px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-          />
-          <input
-            type="text"
-            value={qPrompt}
-            onChange={(e) => setQPrompt(e.target.value)}
-            placeholder="Question prompt..."
-            aria-label="Quiz question prompt"
-            className="w-full px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-          />
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="text"
-              value={qOptA}
-              onChange={(e) => setQOptA(e.target.value)}
-              placeholder="Option A"
-              aria-label="Option A"
-              className="px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-            />
-            <input
-              type="text"
-              value={qOptB}
-              onChange={(e) => setQOptB(e.target.value)}
-              placeholder="Option B"
-              aria-label="Option B"
-              className="px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-            />
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <select
-              aria-label="Correct option"
-              value={qCorrect}
-              onChange={(e) => setQCorrect(e.target.value)}
-              className="px-2 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-            >
-              <option value="A">Correct: A</option>
-              <option value="B">Correct: B</option>
-            </select>
-            <input
-              type="text"
-              value={qExpl}
-              onChange={(e) => setQExpl(e.target.value)}
-              placeholder="Answer explanation..."
-              aria-label="Answer explanation"
-              className="col-span-2 px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
-            />
-          </div>
-          <button type="submit" className="px-4 py-2 rounded-xl text-xs font-semibold muse-btn-primary">
-            Publish Quiz
-          </button>
-        </form>
-      </div>
-
-      {/* Student Submissions Review */}
-      <div className="muse-card p-5 space-y-3">
-        <h2 className="font-display font-bold text-base">
-          Student Submissions ({workspace.submissions.length})
-        </h2>
-        {workspace.submissions.length === 0 ? (
-          <p className="text-xs text-[var(--text-muted)]">
-            No student assignment submissions received yet.
-          </p>
-        ) : (
-          <div className="space-y-3">
-            {workspace.submissions.map((sub) => (
-              <div key={sub.id} className="muse-panel p-4 space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold">{sub.studentName}</span>
-                  <span className="uppercase font-semibold text-blue-400">{sub.status}</span>
-                </div>
-                <p className="text-xs text-[var(--text-secondary)]">{sub.content}</p>
-                {sub.status !== 'reviewed' ? (
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    <input
-                      type="text"
-                      value={feedbackDraft[sub.id] || ''}
-                      onChange={(e) => setFeedbackDraft((d) => ({ ...d, [sub.id]: e.target.value }))}
-                      placeholder="Write teacher feedback..."
-                      aria-label="Teacher feedback"
-                      className="flex-1 px-3 py-1.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs"
-                    />
-                    <input
-                      type="text"
-                      value={gradeDraft[sub.id] || 'A'}
-                      onChange={(e) => setGradeDraft((g) => ({ ...g, [sub.id]: e.target.value }))}
-                      placeholder="Grade"
-                      aria-label="Grade"
-                      className="w-20 px-2 py-1.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onReviewSubmission(
-                          sub.id,
-                          feedbackDraft[sub.id] || 'Good work!',
-                          gradeDraft[sub.id] || 'A'
-                        )
-                      }
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold muse-btn-primary"
-                    >
-                      Mark Reviewed
-                    </button>
-                  </div>
-                ) : (
-                  <div className="text-xs font-medium text-[var(--accent-emerald)]">
-                    Feedback ({sub.grade}): {sub.teacherFeedback}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
 
 /* ---------------- ADMIN PANEL ---------------- */
 export const AdminPanelView: React.FC<{
@@ -479,8 +810,12 @@ export const AdminPanelView: React.FC<{
   const loadAdminEducationState = async () => {
     setEdContentLoading(true);
     try {
-      const resp = await fetch('/api/admin/education/content');
-      if (!resp.ok) return;
+      const resp = await authFetch('/api/admin/education/content');
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        setEdError(err.error || 'Administrator privileges with verified email are required.');
+        return;
+      }
       const data = await resp.json();
       setApprovedChannels(data.approvedChannels || []);
       setCuratedVideos(data.curatedVideos || []);
@@ -503,7 +838,7 @@ export const AdminPanelView: React.FC<{
     setEdError(null);
     setEdNotice(null);
     try {
-      const resp = await fetch('/api/admin/education/content', {
+      const resp = await authFetch('/api/admin/education/content', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ kind, payload }),
@@ -524,7 +859,7 @@ export const AdminPanelView: React.FC<{
 
   const handleReportDecision = async (reportId: string, status: 'removed' | 'dismissed') => {
     setEdError(null);
-    const resp = await fetch(`/api/admin/education/content/${encodeURIComponent(reportId)}`, {
+    const resp = await authFetch(`/api/admin/education/content/${encodeURIComponent(reportId)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
@@ -532,11 +867,14 @@ export const AdminPanelView: React.FC<{
     if (resp.ok) {
       setEdNotice(status === 'removed' ? 'Video blocked and removed from results.' : 'Report dismissed.');
       await loadAdminEducationState();
+    } else {
+      const err = await resp.json().catch(() => ({}));
+      setEdError(err.error || 'Admin permission required.');
     }
   };
 
   const handleUnblockVideo = async (videoId: string) => {
-    const resp = await fetch(`/api/admin/education/content/${encodeURIComponent(videoId)}`, {
+    const resp = await authFetch(`/api/admin/education/content/${encodeURIComponent(videoId)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ unblock: true }),
@@ -544,6 +882,9 @@ export const AdminPanelView: React.FC<{
     if (resp.ok) {
       setEdNotice(`Unblocked video ${videoId}.`);
       await loadAdminEducationState();
+    } else {
+      const err = await resp.json().catch(() => ({}));
+      setEdError(err.error || 'Admin permission required.');
     }
   };
 
@@ -592,7 +933,7 @@ export const AdminPanelView: React.FC<{
         {workspace.authMode === 'demo' && (
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-[var(--text-muted)]">Demo Role:</span>
-            {(['student', 'parent', 'teacher', 'admin'] as UserRole[]).map((r) => (
+            {(['student', 'parent', 'admin'] as UserRole[]).map((r) => (
               <button
                 key={r}
                 type="button"

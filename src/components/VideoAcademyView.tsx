@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bookmark,
   CheckCircle2,
+  Download,
+  ExternalLink,
   Filter,
   Layers,
   Pause,
@@ -23,7 +25,10 @@ import {
   VIDEO_CATEGORIES,
   VideoCollectionFilter,
 } from '../utils/academyUtils';
+import { filterByStudentClass, prioritizeByClassAndProfile } from '../utils/curriculumFilter';
 import { XRSpatialLab } from './XRSpatialLab';
+import { authFetch } from '../services/firebaseClient';
+import { pickPreferredSpeechVoice } from '../utils/liveVoiceUtils';
 
 interface VideoAcademyViewProps {
   profile?: UserProfile;
@@ -31,6 +36,8 @@ interface VideoAcademyViewProps {
   watchedIds: string[];
   bookmarkedIds: string[];
   initialCategory?: 'ALL' | VideoCategory;
+  initialSubject?: string;
+  initialSearch?: string;
   onMarkWatched: (id: string) => void;
   onToggleBookmark: (id: string) => void;
   onAddCustomVideo?: (video: VideoLesson) => void;
@@ -182,6 +189,49 @@ function drawSceneCanvas(
         ctx.fill();
       }
     });
+  } else if (video.xrModelId === 'motion_physics' || video.id.includes('motion')) {
+    // Inclined ramp, sliding block, force vector F = ma, and velocity trail
+    const slideT = (progressPct % 100) / 100;
+    const rampX1 = 120;
+    const rampY1 = 108;
+    const rampX2 = 540;
+    const rampY2 = 228;
+
+    ctx.fillStyle = 'rgba(30, 58, 138, 0.55)';
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(rampX1, rampY2);
+    ctx.lineTo(rampX2, rampY2);
+    ctx.lineTo(rampX1, rampY1);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    const bx = rampX1 + 40 + slideT * 310;
+    const slopeRatio = (rampY2 - rampY1) / (rampX2 - rampX1);
+    const by = rampY1 + (bx - rampX1) * slopeRatio - 18;
+
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.rotate(Math.atan(slopeRatio));
+    ctx.fillStyle = '#38bdf8';
+    ctx.strokeStyle = '#e0f2fe';
+    ctx.lineWidth = 2;
+    ctx.fillRect(-20, -16, 40, 26);
+    ctx.strokeRect(-20, -16, 40, 26);
+    ctx.restore();
+
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(bx + 18, by - 4);
+    ctx.lineTo(bx + 78, by + 16);
+    ctx.stroke();
+
+    ctx.fillStyle = '#fde68a';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillText('F = m × a   |   v = u + at   |   s = ut + ½at²', 120, 86);
   } else {
     // Default animated wave + concept progress timeline
     ctx.strokeStyle = '#38bdf8';
@@ -223,14 +273,17 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
   watchedIds,
   bookmarkedIds,
   initialCategory = 'ALL',
+  initialSubject = 'ALL',
+  initialSearch = '',
   onMarkWatched,
   onToggleBookmark,
   onAddCustomVideo,
   onAskAITeacher,
 }) => {
-  const [search, setSearch] = useState('');
-  const [subject, setSubject] = useState('ALL');
+  const [search, setSearch] = useState(initialSearch);
+  const [subject, setSubject] = useState(initialSubject);
   const [boardFilter, setBoardFilter] = useState('ALL');
+  const [myClassOnly, setMyClassOnly] = useState<boolean>(() => !initialSearch && Boolean(profile?.classLevel));
   const [classFilter, setClassFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | VideoCategory>(initialCategory);
   const [collectionFilter, setCollectionFilter] = useState<VideoCollectionFilter>('all');
@@ -241,32 +294,45 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
   const [progressSec, setProgressSec] = useState(0);
   const [showCaptions, setShowCaptions] = useState(true);
   const [narrateCaptions, setNarrateCaptions] = useState(false);
+  const [recordingWebm, setRecordingWebm] = useState(false);
   const [customTopic, setCustomTopic] = useState('');
+  const [customExternalUrl, setCustomExternalUrl] = useState('');
   const [customSubject, setCustomSubject] = useState(profile?.subjects[0] || 'Science');
   const [customLoading, setCustomLoading] = useState(false);
   const [customError, setCustomError] = useState<string | null>(null);
   const [brokenThumbs, setBrokenThumbs] = useState<Record<string, boolean>>({});
   const lastSpokenIdxRef = useRef<number>(-1);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
 
   useEffect(() => {
     setCategoryFilter(initialCategory);
   }, [initialCategory]);
 
-  const filtered = useMemo(
-    () =>
-      filterVideoLibrary(videos, {
-        subject,
-        category: categoryFilter,
-        board: boardFilter,
-        classLevel: classFilter,
-        search,
-        collectionFilter,
-        watchedIds,
-        bookmarkedIds,
-      }),
-    [videos, subject, categoryFilter, boardFilter, classFilter, search, collectionFilter, watchedIds, bookmarkedIds]
-  );
+  useEffect(() => {
+    if (initialSubject) setSubject(initialSubject);
+  }, [initialSubject]);
+
+  useEffect(() => {
+    if (initialSearch) setSearch(initialSearch);
+  }, [initialSearch]);
+
+  const filtered = useMemo(() => {
+    const base = filterVideoLibrary(videos, {
+      subject,
+      category: categoryFilter,
+      board: boardFilter,
+      classLevel: classFilter,
+      search,
+      collectionFilter,
+      watchedIds,
+      bookmarkedIds,
+    });
+    const ranked = profile ? prioritizeByClassAndProfile(base, profile) : base;
+    return profile && classFilter === 'ALL'
+      ? filterByStudentClass(ranked, profile.classLevel, myClassOnly)
+      : ranked;
+  }, [videos, subject, categoryFilter, boardFilter, classFilter, search, collectionFilter, watchedIds, bookmarkedIds, profile, myClassOnly]);
 
   const groupedPlaylists = useMemo(() => groupVideosByCategory(filtered), [filtered]);
 
@@ -279,21 +345,69 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
     ? computeVideoCaptionIndex(progressSec, activeVideo.captions.length)
     : -1;
 
+  const canRecordWebm =
+    typeof window !== 'undefined' &&
+    'MediaRecorder' in window &&
+    typeof HTMLCanvasElement !== 'undefined' &&
+    typeof HTMLCanvasElement.prototype.captureStream === 'function';
+
+  const handleToggleWebmRecord = () => {
+    if (recordingWebm && recorderRef.current) {
+      recorderRef.current.stop();
+      setRecordingWebm(false);
+      return;
+    }
+    const canvas = canvasRef.current;
+    if (!canvas || !canRecordWebm || !activeVideo) return;
+    try {
+      const stream = canvas.captureStream(24);
+      const chunks: Blob[] = [];
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+        ? 'video/webm;codecs=vp9'
+        : 'video/webm';
+      const recorder = new MediaRecorder(stream, { mimeType });
+      recorder.ondataavailable = (ev) => {
+        if (ev.data.size > 0) chunks.push(ev.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${activeVideo.id}_walkthrough.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setRecordingWebm(false);
+      };
+      recorderRef.current = recorder;
+      recorder.start();
+      setRecordingWebm(true);
+      setProgressSec(0);
+      setPlaying(true);
+    } catch {
+      setRecordingWebm(false);
+    }
+  };
+
   useEffect(() => {
     if (!playing || !activeVideo) return;
     const step = 2 * playbackSpeed;
     const timer = window.setInterval(() => {
-      setProgressSec((prev) => {
-        if (prev + step >= 100) {
-          setPlaying(false);
-          onMarkWatched(activeVideo.id);
-          return 100;
-        }
-        return prev + step;
-      });
+      setProgressSec((prev) => Math.min(100, prev + step));
     }, 220);
     return () => clearInterval(timer);
-  }, [playing, playbackSpeed, activeVideo, onMarkWatched]);
+  }, [playing, playbackSpeed, activeVideo]);
+
+  useEffect(() => {
+    if (!playing || !activeVideo || progressSec < 100) return;
+    setPlaying(false);
+    if (recordingWebm && recorderRef.current && recorderRef.current.state === 'recording') {
+      recorderRef.current.stop();
+    }
+    if (!watchedIds.includes(activeVideo.id)) {
+      onMarkWatched(activeVideo.id);
+    }
+  }, [playing, progressSec, activeVideo, watchedIds, onMarkWatched, recordingWebm]);
 
   useEffect(() => {
     if (!narrateCaptions || !playing || !activeVideo || activeCaptionIdx < 0) return;
@@ -305,11 +419,17 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
       const raw = activeVideo.captions[activeCaptionIdx] || '';
       const spokenText = raw.replace(/^\d{2}:\d{2}\s*[—-]\s*/, '');
       const utterance = new SpeechSynthesisUtterance(spokenText);
+      const chosenVoice = pickPreferredSpeechVoice(
+        window.speechSynthesis.getVoices(),
+        profile?.preferredLanguage || 'English'
+      );
+      if (chosenVoice) utterance.voice = chosenVoice;
+      utterance.lang = chosenVoice?.lang || 'en-IN';
       utterance.rate = Math.min(2, Math.max(0.5, Number(profile?.speechRate ?? 1.0)));
       utterance.pitch = Math.min(2, Math.max(0.5, Number(profile?.speechPitch ?? 1.0)));
       window.speechSynthesis.speak(utterance);
     }
-  }, [narrateCaptions, playing, activeVideo, activeCaptionIdx, profile?.speechRate, profile?.speechPitch]);
+  }, [narrateCaptions, playing, activeVideo, activeCaptionIdx, profile?.preferredLanguage, profile?.speechRate, profile?.speechPitch]);
 
   useEffect(() => {
     if (!playing && typeof window !== 'undefined' && 'speechSynthesis' in window && narrateCaptions) {
@@ -331,7 +451,7 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
     setCustomLoading(true);
     setCustomError(null);
     try {
-      const resp = await fetch('/api/ai/video-walkthrough', {
+      const resp = await authFetch('/api/ai/video-walkthrough', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -358,10 +478,11 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
         title: data.title || customTopic.trim(),
         description: data.description || '',
         durationLabel: data.durationLabel || '04:00',
-        sourceLabel: `Muse AI Walkthrough (${LANGUAGES.includes((profile?.preferredLanguage || 'English') as typeof LANGUAGES[number]) ? profile?.preferredLanguage || 'English' : 'English'})`,
+        sourceLabel: `Nano AI Walkthrough (${LANGUAGES.includes((profile?.preferredLanguage || 'English') as typeof LANGUAGES[number]) ? profile?.preferredLanguage || 'English' : 'English'})`,
         captionsAvailable: true,
         captions: Array.isArray(data.captions) && data.captions.length > 0 ? data.captions : [`00:00 — ${customTopic.trim()}`],
         keyTakeaways: Array.isArray(data.keyTakeaways) ? data.keyTakeaways : [],
+        ...( /^https?:\/\/.+/i.test(customExternalUrl.trim()) ? { externalUrl: customExternalUrl.trim() } : {} ),
       };
       onAddCustomVideo(newVid);
       setCategoryFilter('ALL');
@@ -370,6 +491,7 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
       setPlaying(false);
       lastSpokenIdxRef.current = -1;
       setCustomTopic('');
+      setCustomExternalUrl('');
     } catch (err: unknown) {
       setCustomError(err instanceof Error ? err.message : 'Network error generating video walkthrough.');
     } finally {
@@ -469,10 +591,13 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
             <select
               aria-label="Filter videos by class"
               value={classFilter}
-              onChange={(e) => setClassFilter(e.target.value)}
+              onChange={(e) => {
+                setClassFilter(e.target.value);
+                if (e.target.value !== 'ALL') setMyClassOnly(false);
+              }}
               className="px-2.5 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
             >
-              <option value="ALL">All Classes</option>
+              <option value="ALL">All Classes (1–12)</option>
               {CLASS_LEVELS.map((c) => (
                 <option key={c} value={c}>Class {c}</option>
               ))}
@@ -528,6 +653,22 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
 
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
+            {profile && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMyClassOnly((m) => !m);
+                  setClassFilter('ALL');
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border ${
+                  myClassOnly && classFilter === 'ALL'
+                    ? 'bg-purple-600 text-white border-purple-500'
+                    : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                }`}
+              >
+                My Class ({profile.classLevel})
+              </button>
+            )}
             {(
               [
                 { id: 'all', label: `All Videos (${videos.length})` },
@@ -538,9 +679,12 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setCollectionFilter(tab.id)}
+                onClick={() => {
+                  setCollectionFilter(tab.id);
+                  if (tab.id === 'all') setMyClassOnly(false);
+                }}
                 className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border ${
-                  collectionFilter === tab.id
+                  collectionFilter === tab.id && !(tab.id === 'all' && myClassOnly)
                     ? 'bg-blue-600 text-white border-blue-500'
                     : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
                 }`}
@@ -565,9 +709,17 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
                 type="text"
                 value={customTopic}
                 onChange={(e) => setCustomTopic(e.target.value)}
-                placeholder="Generate AI tutorial for any topic..."
+                placeholder="Generate AI walkthrough for any topic..."
                 aria-label="Topic for AI video walkthrough"
-                className="px-3 py-1.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs w-full sm:w-56 min-w-0"
+                className="px-3 py-1.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs w-full sm:w-48 min-w-0"
+              />
+              <input
+                type="url"
+                value={customExternalUrl}
+                onChange={(e) => setCustomExternalUrl(e.target.value)}
+                placeholder="Optional video link..."
+                aria-label="Optional external video URL"
+                className="px-3 py-1.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs w-full sm:w-44 min-w-0"
               />
               <select
                 aria-label="Subject for AI video walkthrough"
@@ -726,6 +878,31 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
                 >
                   {watchedIds.includes(activeVideo.id) ? 'Watched' : 'Mark Watched'}
                 </button>
+                {canRecordWebm && (
+                  <button
+                    type="button"
+                    onClick={handleToggleWebmRecord}
+                    className={`px-3 py-1.5 rounded-xl text-xs border whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                      recordingWebm
+                        ? 'bg-rose-600 text-white border-rose-500'
+                        : 'bg-[var(--bg-elevated)] border-[var(--border-subtle)]'
+                    }`}
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>{recordingWebm ? 'Stop & Save (.webm)' : 'Record Walkthrough (.webm)'}</span>
+                  </button>
+                )}
+                {activeVideo.externalUrl && (
+                  <a
+                    href={activeVideo.externalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-rose-600/20 text-rose-300 border border-rose-500/30 whitespace-nowrap shrink-0 flex items-center gap-1"
+                  >
+                    <span>Watch External Video</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
                 {onAskAITeacher && (
                   <button
                     type="button"
@@ -738,7 +915,7 @@ export const VideoAcademyView: React.FC<VideoAcademyViewProps> = ({
                     className="px-3 py-1.5 rounded-xl text-xs bg-[var(--bg-subtle)] text-blue-400 border border-blue-500/30 whitespace-nowrap shrink-0 flex items-center gap-1"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>Ask AI</span>
+                    <span>Ask Nano AI</span>
                   </button>
                 )}
               </div>

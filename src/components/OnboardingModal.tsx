@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { BOARDS, CLASS_LEVELS, CORE_SUBJECTS, LANGUAGES } from '../data/curriculumSeed';
 import { EducationBoard, UserProfile } from '../types/muse';
+import { getClassDashboardBlueprint } from '../utils/curriculumFilter';
 import { Check, ShieldAlert, Sparkles } from 'lucide-react';
 
 interface OnboardingModalProps {
@@ -19,9 +20,13 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   const [learningPreference, setLearningPreference] = useState(
     initialProfile.learningPreference || 'Visual & Step-by-step'
   );
-  const [subjects, setSubjects] = useState<string[]>(
-    initialProfile.subjects.length > 0 ? initialProfile.subjects : ['Mathematics', 'Science', 'English']
-  );
+  const [subjectsCustomized, setSubjectsCustomized] = useState(false);
+  const [subjects, setSubjects] = useState<string[]>(() => {
+    if (initialProfile.subjects.length > 0 && initialProfile.classLevel !== 7) {
+      return initialProfile.subjects;
+    }
+    return getClassDashboardBlueprint(initialProfile.classLevel || 7).recommendedSubjects.slice(0, 4);
+  });
   const [academicGoal, setAcademicGoal] = useState(
     initialProfile.academicGoal || 'Build strong conceptual clarity across core subjects'
   );
@@ -29,7 +34,15 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   const [guardianConsent, setGuardianConsent] = useState(initialProfile.guardianConsentApproved);
   const [error, setError] = useState<string | null>(null);
 
+  const handleClassLevelChange = (nextClass: number) => {
+    setClassLevel(nextClass);
+    if (!subjectsCustomized) {
+      setSubjects(getClassDashboardBlueprint(nextClass).recommendedSubjects.slice(0, 4));
+    }
+  };
+
   const toggleSubject = (sub: string) => {
+    setSubjectsCustomized(true);
     setSubjects((prev) =>
       prev.includes(sub) ? prev.filter((s) => s !== sub) : [...prev, sub]
     );
@@ -72,11 +85,11 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-500 uppercase tracking-wider mb-1">
-              <Sparkles className="w-3.5 h-3.5" /> Student Onboarding
+              <Sparkles className="w-3.5 h-3.5" /> Student Onboarding · Nano AI
             </div>
-            <h1 className="font-display text-2xl font-bold">Personalize Your Muse AI Workspace</h1>
+            <h1 className="font-display text-2xl font-bold">Personalize Your Nano AI Workspace</h1>
             <p className="text-sm text-[var(--text-muted)] mt-1">
-              We collect only your academic preferences—no unnecessary personal details.
+              Choose your class and board so lessons, videos, quizzes, and 3D labs adapt automatically to your syllabus.
             </p>
           </div>
         </div>
@@ -132,7 +145,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
               <select
                 id="onb-class"
                 value={classLevel}
-                onChange={(e) => setClassLevel(Number(e.target.value))}
+                onChange={(e) => handleClassLevelChange(Number(e.target.value))}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-sm focus:outline-none focus:border-blue-500"
               >
                 {CLASS_LEVELS.map((c) => (
@@ -177,7 +190,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
 
           <div>
             <span className="block text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-2">
-              Subjects
+              Subjects ({subjects.length} selected for Class {classLevel})
             </span>
             <div className="flex flex-wrap gap-2">
               {CORE_SUBJECTS.map((sub) => {
@@ -245,7 +258,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             type="submit"
             className="w-full py-3 rounded-xl font-semibold text-sm muse-btn-primary"
           >
-            Save Preferences & Enter Muse AI
+            Save Preferences &amp; Enter Nano AI
           </button>
         </form>
       </div>

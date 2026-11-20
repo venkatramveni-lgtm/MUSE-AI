@@ -1,6 +1,7 @@
 import { registerSW } from 'virtual:pwa-register';
 import {
   buildOfflineCacheSnapshot,
+  isMatchingOfflineSnapshot,
   OfflineUserSnapshot,
 } from '../utils/offlineCache';
 import {
@@ -11,6 +12,8 @@ import {
   StudyPlanTask,
   UserProfile,
 } from '../types/muse';
+
+export { isMatchingOfflineSnapshot };
 
 const OFFLINE_CACHE_NAME = 'muse-offline-user-data-v1';
 const ESSENTIAL_CURRICULUM_API = '/api/offline/curriculum';
@@ -32,7 +35,7 @@ function getSnapshotCacheKey(uid: string): string {
   return `/__offline/snapshot/${encodeURIComponent(uid)}.json`;
 }
 
-const LATEST_UID_CACHE_KEY = '/__offline/latest-uid.json';
+const LEGACY_LATEST_UID_CACHE_KEY = '/__offline/latest-uid.json';
 
 export function initServiceWorkerRegistration(
   onStatusChange?: (registered: boolean) => void
@@ -93,6 +96,9 @@ export async function syncOfflineSnapshotToCache(params: {
   attempts: QuizAttempt[];
 }): Promise<OfflineUserSnapshot | null> {
   const snapshot = buildOfflineCacheSnapshot(params);
+  if (!snapshot.uid || snapshot.uid === 'demo_guest') {
+    return snapshot;
+  }
 
   if (typeof window === 'undefined' || !('caches' in window)) {
     return snapshot;
@@ -107,12 +113,8 @@ export async function syncOfflineSnapshotToCache(params: {
       },
     });
     await cache.put(getSnapshotCacheKey(snapshot.uid), snapshotResponse);
-
-    const latestPtrResponse = new Response(
-      JSON.stringify({ uid: snapshot.uid, cachedAt: snapshot.cachedAt }),
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-    await cache.put(LATEST_UID_CACHE_KEY, latestPtrResponse);
+    // Clean up any legacy unauthenticated latest-uid pointer
+    await cache.delete(LEGACY_LATEST_UID_CACHE_KEY).catch(() => {});
     return snapshot;
   } catch {
     return snapshot;
@@ -122,33 +124,43 @@ export async function syncOfflineSnapshotToCache(params: {
 export async function readOfflineSnapshotFromCache(
   uid?: string
 ): Promise<OfflineUserSnapshot | null> {
+  if (!uid || !uid.trim() || uid === 'demo_guest') return null;
   if (typeof window === 'undefined' || !('caches' in window)) return null;
   try {
     const cache = await window.caches.open(OFFLINE_CACHE_NAME);
-    let targetUid = uid;
-    if (!targetUid) {
-      const ptrResp = await cache.match(LATEST_UID_CACHE_KEY);
-      if (ptrResp) {
-        const ptr = (await ptrResp.json()) as { uid?: string };
-        targetUid = ptr.uid;
-      }
-    }
-    if (!targetUid) return null;
-    const resp = await cache.match(getSnapshotCacheKey(targetUid));
+    const resp = await cache.match(getSnapshotCacheKey(uid));
     if (!resp) return null;
     const data = (await resp.json()) as OfflineUserSnapshot;
-    if (!data || !data.profile) return null;
+    if (!isMatchingOfflineSnapshot(data, uid)) return null;
     return data;
   } catch {
     return null;
   }
 }
 
-export async function clearOfflineCacheForUser(uid: string): Promise<void> {
+export async function clearOfflineCacheForUser(uid?: string): Promise<void> {
   if (typeof window === 'undefined' || !('caches' in window)) return;
   try {
     const cache = await window.caches.open(OFFLINE_CACHE_NAME);
-    await cache.delete(getSnapshotCacheKey(uid));
+    if (uid && uid.trim()) {
+      await cache.delete(getSnapshotCacheKey(uid));
+    }
+    await cache.delete(LEGACY_LATEST_UID_CACHE_KEY);
+  } catch {
+    // Ignore
+  }
+}
+
+export async function clearAllOfflineUserSnapshots(): Promise<void> {
+  if (typeof window === 'undefined' || !('caches' in window)) return;
+  try {
+    const cache = await window.caches.open(OFFLINE_CACHE_NAME);
+    const keys = await cache.keys();
+    await Promise.all(
+      keys
+        .filter((req) => new URL(req.url).pathname.startsWith('/__offline/'))
+        .map((req) => cache.delete(req))
+    );
   } catch {
     // Ignore
   }
@@ -177,3 +189,4 @@ export async function getOfflineCacheStatus(uid?: string): Promise<OfflineCacheS
     lastSyncedAt: snapshot?.cachedAt ?? null,
   };
 }
+

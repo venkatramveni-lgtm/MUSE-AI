@@ -284,3 +284,54 @@ export function sanitizeId(raw: string): string {
 export function truncateForBlueprint(value: string, maxLength: number): string {
   return value.trim().slice(0, maxLength);
 }
+
+export interface QuizTrendPoint {
+  index: number;
+  id: string;
+  label: string;
+  shortDate: string;
+  title: string;
+  subject: string;
+  mode: QuizAttempt['mode'];
+  score: number;
+  total: number;
+  percentage: number;
+  cumulativeAvg: number;
+}
+
+export function buildQuizTrendChartData(attempts: QuizAttempt[], limit = 16): QuizTrendPoint[] {
+  if (!attempts || attempts.length === 0) return [];
+
+  const sorted = [...attempts].sort((a, b) => {
+    const tA = Date.parse(a.submittedAt) || 0;
+    const tB = Date.parse(b.submittedAt) || 0;
+    return tA - tB;
+  });
+
+  const sliced = sorted.slice(-Math.max(1, limit));
+  let runningSum = 0;
+
+  return sliced.map((att, idx) => {
+    const pct = Math.min(100, Math.max(0, Math.round(Number(att.percentage) || 0)));
+    runningSum += pct;
+    const cumulativeAvg = Math.round(runningSum / (idx + 1));
+    const parsedDate = Date.parse(att.submittedAt);
+    const shortDate = Number.isFinite(parsedDate)
+      ? new Date(parsedDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+      : `#${idx + 1}`;
+    return {
+      index: idx + 1,
+      id: att.id,
+      label: `#${idx + 1} · ${shortDate}`,
+      shortDate,
+      title: att.assessmentTitle || `${att.subject} Quiz`,
+      subject: att.subject,
+      mode: att.mode,
+      score: att.score,
+      total: att.total,
+      percentage: pct,
+      cumulativeAvg,
+    };
+  });
+}
+

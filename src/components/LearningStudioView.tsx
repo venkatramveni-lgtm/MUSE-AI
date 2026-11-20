@@ -23,6 +23,7 @@ import {
   VideoLesson,
 } from '../types/muse';
 import { MuseWorkspaceState } from '../services/workspaceStore';
+import { authFetch } from '../services/firebaseClient';
 import { OfflineCacheStatus } from '../services/offlineCacheService';
 import { LessonCollectionFilter } from '../utils/offlineCache';
 import { VIDEO_CATEGORIES } from '../utils/academyUtils';
@@ -55,6 +56,7 @@ interface LearningStudioViewProps {
   onToggleOfflineLesson: (lesson: LessonItem) => void;
   onSyncOfflineCache: () => Promise<void> | void;
   onAskAITeacher: (subject?: string, initialPrompt?: string) => void;
+  onAskDocFollowUp?: (doc: UploadedDocItem, subject?: string) => void;
   onRecordAttempt: (attempt: QuizAttempt) => void;
   onMarkVideoWatched: (id: string) => void;
   onToggleVideoBookmark: (id: string) => void;
@@ -67,6 +69,8 @@ interface LearningStudioViewProps {
   onSaveNote: (note: SavedNote) => void;
   onDeleteNote: (noteId: string) => void;
   onSaveUploadedDoc: (doc: UploadedDocItem) => void;
+  onScheduleLesson?: (lesson: LessonItem) => void;
+  onFindVideos?: (lesson: LessonItem) => void;
 }
 
 interface GeneratedQuizQuestion {
@@ -90,6 +94,7 @@ export const LearningStudioView: React.FC<LearningStudioViewProps> = ({
   onToggleOfflineLesson,
   onSyncOfflineCache,
   onAskAITeacher,
+  onAskDocFollowUp,
   onRecordAttempt,
   onMarkVideoWatched,
   onToggleVideoBookmark,
@@ -102,6 +107,8 @@ export const LearningStudioView: React.FC<LearningStudioViewProps> = ({
   onSaveNote,
   onDeleteNote,
   onSaveUploadedDoc,
+  onScheduleLesson,
+  onFindVideos,
 }) => {
   const profile = workspace.profile!;
   const [activeTab, setActiveTab] = useState<StudioTabId>(initialTab);
@@ -118,8 +125,13 @@ export const LearningStudioView: React.FC<LearningStudioViewProps> = ({
   }, [initialAssessmentMode]);
 
   // AI Learning Studio Generator State
-  const [topic, setTopic] = useState('Newton’s Laws of Motion');
-  const [genKind, setGenKind] = useState<'notes' | 'flashcards' | 'quiz'>('notes');
+  const [topic, setTopic] = useState(
+    profile.classLevel === 9
+      ? 'Newton’s Laws of Motion & Cell Organelles'
+      : 'Newton’s Laws of Motion'
+  );
+  const [genKind, setGenKind] = useState<'notes' | 'flashcards' | 'quiz' | 'complete_pack'>('complete_pack');
+  const [guideUrl, setGuideUrl] = useState('');
   const [subject, setSubject] = useState(profile.subjects[0] || 'Science');
   const [language, setLanguage] = useState(profile.preferredLanguage || 'English');
   const [genLoading, setGenLoading] = useState(false);
@@ -143,12 +155,13 @@ export const LearningStudioView: React.FC<LearningStudioViewProps> = ({
     setGenLoading(true);
     setGenError(null);
     try {
-      const resp = await fetch('/api/ai/studio-generate', {
+      const resp = await authFetch('/api/ai/studio-generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           topic: topic.trim(),
           kind: genKind,
+          guideUrl: guideUrl.trim() || undefined,
           subject,
           board: profile.board,
           classLevel: profile.classLevel,
@@ -199,7 +212,7 @@ export const LearningStudioView: React.FC<LearningStudioViewProps> = ({
         reader.readAsDataURL(file);
       });
 
-      const resp = await fetch('/api/ai/analyze-document', {
+      const resp = await authFetch('/api/ai/analyze-document', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -297,13 +310,32 @@ export const LearningStudioView: React.FC<LearningStudioViewProps> = ({
                 />
               </div>
 
+              <div>
+                <label htmlFor="studio-guide-url" className="block text-xs font-semibold text-[var(--text-muted)] mb-1">
+                  Reference Video / Guide URL (Optional — e.g. @WORKBOOKGURUJI or DIKSHA)
+                </label>
+                <input
+                  id="studio-guide-url"
+                  type="url"
+                  value={guideUrl}
+                  onChange={(e) => setGuideUrl(e.target.value)}
+                  placeholder="http://www.youtube.com/@WORKBOOKGURUJI"
+                  className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
+                />
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                 <select
                   aria-label="Studio output type"
                   value={genKind}
-                  onChange={(e) => setGenKind(e.target.value as 'notes' | 'flashcards' | 'quiz')}
+                  onChange={(e) =>
+                    setGenKind(
+                      e.target.value as 'notes' | 'flashcards' | 'quiz' | 'complete_pack'
+                    )
+                  }
                   className="px-3 py-2 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-xs"
                 >
+                  <option value="complete_pack">Complete Study Pack (Notes + Cards + Daily Quiz)</option>
                   <option value="notes">Structured Notes &amp; Summary</option>
                   <option value="flashcards">Active-Recall Flashcards</option>
                   <option value="quiz">5-Question Practice Quiz</option>
@@ -515,21 +547,32 @@ export const LearningStudioView: React.FC<LearningStudioViewProps> = ({
                   <div key={doc.id} className="muse-panel p-3.5 space-y-2">
                     <div className="flex items-center justify-between gap-2 text-xs">
                       <span className="font-semibold text-[var(--text-primary)] truncate">{doc.name}</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onSaveNote({
-                            id: `note_doc_${Date.now()}`,
-                            subject,
-                            title: `Notes: ${doc.name}`,
-                            content: doc.summary,
-                            updatedAt: new Date().toISOString(),
-                          })
-                        }
-                        className="text-emerald-400 font-semibold hover:underline shrink-0"
-                      >
-                        Save Note
-                      </button>
+                      <div className="flex items-center gap-2.5 shrink-0">
+                        {onAskDocFollowUp && (
+                          <button
+                            type="button"
+                            onClick={() => onAskDocFollowUp(doc, subject)}
+                            className="text-blue-400 font-semibold hover:underline"
+                          >
+                            Ask AI Follow-Up
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onSaveNote({
+                              id: `note_doc_${Date.now()}`,
+                              subject,
+                              title: `Notes: ${doc.name}`,
+                              content: doc.summary,
+                              updatedAt: new Date().toISOString(),
+                            })
+                          }
+                          className="text-emerald-400 font-semibold hover:underline"
+                        >
+                          Save Note
+                        </button>
+                      </div>
                     </div>
                     <p className="text-xs text-[var(--text-secondary)] whitespace-pre-wrap">{doc.summary}</p>
                   </div>
@@ -607,6 +650,8 @@ export const LearningStudioView: React.FC<LearningStudioViewProps> = ({
           onToggleOfflineLesson={onToggleOfflineLesson}
           onSyncOfflineCache={onSyncOfflineCache}
           onAskAITeacher={(sub?: string) => onAskAITeacher(sub)}
+          onScheduleLesson={onScheduleLesson}
+          onFindVideos={onFindVideos}
         />
       )}
 
@@ -678,6 +723,7 @@ export const LearningStudioView: React.FC<LearningStudioViewProps> = ({
             }
           }}
           onAskAITeacher={(sub?: string, prompt?: string) => onAskAITeacher(sub, prompt)}
+          onAskDocFollowUp={onAskDocFollowUp}
         />
       )}
 
